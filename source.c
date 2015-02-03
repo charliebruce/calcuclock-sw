@@ -509,7 +509,7 @@ void calculatorMode() {
 							button_pressed = true;
 						}
 						if(iEntNum == 0)
-							iCurrNum = 2^60 * sign(iCurrNum);//infinity-ish
+							iCurrNum = (1<<60) * sign(iCurrNum);//infinity-ish
 						else
 							iCurrNum = iCurrNum / iEntNum;
 
