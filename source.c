@@ -23,6 +23,8 @@ WDT disabled.
 #include <stdint.h>     //Needed for uint8_t, suits Charlie's coding style better
 #include <util/delay.h> //Needed for small delays such as when showing LEDs
 
+#include <math.h>
+
 //The state of each segment (A..DP for devices, left = 0, right = 5).
 volatile uint8_t segstates[6];
 
@@ -53,12 +55,13 @@ const uint8_t numbersToSegments[11] =
 const uint8_t ceButton = 2;
 const uint8_t btnsA = A0;
 const uint8_t btnsB = A1;
+const uint8_t ledPin = 3;
 
 #define SEGMENT_OFF HIGH
 #define SEGMENT_ON LOW
 
-#define COLUMN_OFF LOW
-#define COLUMN_ON HIGH
+#define COLUMN_OFF HIGH
+#define COLUMN_ON LOW
 
 //preload timer with 65535 - 4000 - 4,000 cycles at 8mhz is 2khz.
 #define PWM_TIME (65535-4000)
@@ -130,7 +133,9 @@ void setup(){
 		digitalWrite(x, LOW);
 	}
 
-	pinMode(ceButton, INPUT); //C/CE/ON button
+        pinMode(ledPin, OUTPUT);
+
+        pinMode(ceButton, INPUT); //C/CE/ON button
 	digitalWrite(ceButton, HIGH); //Internal pull-up on this button.
 
 	//Set up the 7-segment display pins as outputs.
@@ -201,7 +206,20 @@ void loop() {
   //Clockset mode should account for BST or NOT-BST (whenever the hour, day or month increments, check against the BST conditions?)
   //Or just require user intervention...
   
+  //clockMode();
+
+  calculatorMode();
   
+  //TODO when waking up, do a battery voltage check, warn if lower than 2.4v or so (measure with 7segs off?)...
+  //showLowBatteryWarning();
+
+}
+
+
+
+void clockMode() {
+  
+   
   
   //CLOCK MODE
   
@@ -212,13 +230,7 @@ void loop() {
  
    calculateTimezoneCorrection();
    displayDate();
-  _delay_ms(500);
-  calculateTimezoneCorrection();
-   displayDate();
-  _delay_ms(500);
-  calculateTimezoneCorrection();
-   displayDate();
-  _delay_ms(500);
+  _delay_ms(3000);
 
 
   for(int i=0;i<300;i++) {
@@ -228,8 +240,35 @@ void loop() {
   }
   
   
-  uint8_t k = readKeypad();
+
+}
+
+
+void calculatorMode() {
+          
+  displayDouble(123.45);
   
+  
+  _delay_ms(3000);  
+        //  segstates[5] = numbersToSegments[readKeypad()];
+
+	//dow(2013,07,26) returns 5 to indicate Friday.
+
+
+  
+  //segstates[0] = numbersToSegments[readKeypad()%10];
+	  
+  
+  
+  
+  
+}
+
+void displayPressedKey() {
+ 
+   uint8_t k = readKeypad();
+   
+ 
   while (k == NO_KEY)
     k = readKeypad();
   
@@ -310,19 +349,12 @@ void loop() {
   
   
   _delay_ms(2000);
-        
-        //  segstates[5] = numbersToSegments[readKeypad()];
-
-	//dow(2013,07,26) returns 5 to indicate Friday.
-
-
+         
   
-  //segstates[0] = numbersToSegments[readKeypad()%10];
-	
-
-  //TODO when waking up, do a battery voltage check, warn if lower than 2.4v or so (measure with 7segs off?)...
+  
   
 }
+
 
 
 //32.768kHz interrupt handler - this overflows once a second (or once every 8 seconds for maximum power savings?)
@@ -374,9 +406,6 @@ SIGNAL(TIMER2_OVF_vect){
              timezone = 0;
            }            
         }
-        
-
-
 
 }
 
@@ -388,11 +417,14 @@ SIGNAL(INT0_vect){
 
 //This interrupt (overflow) should happen once every few milliseconds.
 //Display update - works with an even brightness. TODO move this to an interrupt every millisecond
-
 SIGNAL(TIMER1_OVF_vect){
 	updateDisplay();
 	TCNT1 = PWM_TIME;
 }
+
+
+
+
 
 
 //TODO draw accounting for brightness better than this (primitive left-right shifting)
@@ -400,29 +432,18 @@ SIGNAL(TIMER1_OVF_vect){
 //TODO optimise - this is an interrupt, so it should be FAST otherwise we'll miss button C/CE button presses
 //(if this consumes more than a few hundred cycles, it's using too many. This runs every 4000 cycles so it shouldn't take moe than 400 or so.
 //OR we could nest an interrupt, at the risk of making things VERY messy...
-volatile uint8_t onFrame = 0;
-volatile uint8_t onSegment = 0;
+volatile uint8_t onDisplay = 0;
 void updateDisplay() {
 
-	digitalWrite(segs[onSegment], SEGMENT_OFF);
-	onFrame++;
-	onFrame = onFrame % 16;
-	onSegment = onFrame%8;
+  digitalWrite(cols[onDisplay],COLUMN_OFF);
+  onDisplay = (onDisplay+1)%6;
+  	
+  for(uint8_t s=0;s<8;s++) {
+    digitalWrite(segs[s], ((segstates[onDisplay] & (1 << s))?SEGMENT_ON:SEGMENT_OFF));
+  }
 
-	if(onFrame<8) {
-		for(uint8_t c=0;c<3;c++) {
-			digitalWrite(cols[c+3],COLUMN_OFF);
-			digitalWrite(cols[c], ((segstates[c] & (1 << onSegment))?COLUMN_ON:COLUMN_OFF));
-		}
-	}
-	else {
-		for(uint8_t c=3;c<6;c++) {
-			digitalWrite(cols[c-3],COLUMN_OFF);
-			digitalWrite(cols[c], ((segstates[c] & (1 << onSegment))?COLUMN_ON:COLUMN_OFF));
-		}
-	}
+  digitalWrite(cols[onDisplay],COLUMN_ON);
 
-	digitalWrite(segs[onSegment], SEGMENT_ON);
 }
 
 
@@ -542,6 +563,163 @@ void displayTime() {
 
 }
 
+//Display any signed long number from 9.9999E9 to -9.99E9. Not smart enough to do 99999E9 yet.
+void displayLong(long num) {
+  
+  //Clear the screen
+  segstates[0] = 0;
+  segstates[1] = 0;
+  segstates[2] = 0;
+  segstates[3] = 0;
+  segstates[4] = 0;
+  segstates[5] = 0;
+  segstates[6] = 0;
+  
+  
+  boolean negative = false;
+  if (num<0) {
+    negative = true; 
+    num = num * -1;
+    segstates[0] = 0b01000000; // Minus Sign
+  }
+
+  //Base10 length (number of digits
+  uint8_t base10log = floor(log10(num)) + 1;
+  
+
+
+  boolean needsExp = false;//Is the number too big to show in one go?
+  if (num > (negative?99999:999999))
+    needsExp = true; 
+ 
+ if(needsExp) {
+   //Display a number in the format 1.234 E 5 because it's too big...
+   uint8_t exponent = base10log - 1;
+   
+   double floaty = num / (pow (10.0, (uint8_t) exponent));
+   //Write digits.
+   for(int i=(negative?1:0);i<3;i++) {
+     uint8_t digit = floor(floaty);
+     segstates[i] = numbersToSegments[digit];
+     floaty = floaty - digit;
+     floaty = floaty * 10;
+   }
+   //Final digit needs rounding to the nearest value (for example, if we're left with 1.55 it needs to round to 2
+   uint8_t digit = lround(floaty);
+   segstates[3] = numbersToSegments[digit];
+   
+   
+      
+   //Add the decimal place.
+   segstates[(negative?1:0)] |= 0b10000000;
+   
+   segstates[4] = 0b01111001;//E
+   segstates[5] = numbersToSegments[exponent % 10];
+   
+ } 
+ else 
+ {
+   //Display a number normally (not exponential notation)
+ 
+   long temp = num;
+   long mod = 10;
+            
+   //Split the number into digits and display.
+   for(int i=5;i>=(6-base10log);i--) {
+     long digit = temp % mod;
+     temp = temp - digit;
+     digit = digit / (mod/10);
+     segstates[i] = numbersToSegments[digit];
+     mod = mod * 10;
+   }
+  }
+  
+}
+
+
+void displayDouble(double num) {
+ 
+  num = 123.45;
+  //TODO remove multiple calculations with floating point numbers to improve accuracy of displayed numbers.
+  
+  if(isnan(num))
+  {
+   //Display error since it's NaN
+   segstates[0] = 0b01111001;// E
+   segstates[1] = 0b00110001;// r
+   segstates[2] = 0b00111001;// r
+   segstates[3] = 0b01011100;// o
+   segstates[4] = 0b00110001;// r
+   segstates[5] = 0;
+   return; 
+  }
+  
+  
+  //Clear the screen
+  segstates[0] = 0;
+  segstates[1] = 0;
+  segstates[2] = 0;
+  segstates[3] = 0;
+  segstates[4] = 0;
+  segstates[5] = 0;
+  segstates[6] = 0;
+  
+  
+  boolean negative = false;
+  if (num<0) {
+    negative = true; 
+    num = num * -1;
+    segstates[0] = 0b01000000; // Minus Sign
+  }
+
+  //Do we get more accuracy by using exponential notatrion?
+  //If the log is negative, ourt number is less than one. If it's E-4 or lower, it's more accurate to use E
+  //If it's longer than 6 digits, we also need to use E
+  double base10log = log10(num);
+  
+  boolean useExp = false;
+  //If less than -3 use exponential notation
+  if(base10log<-3.0)
+    useExp = true;
+    
+  if(num > (negative?99999:999999))
+    useExp = true;
+    
+  if(useExp) {
+  
+  
+  } else {
+  
+    uint8_t numDigitsAboveDP = floor(base10log) + 1;
+    //normalise to x.xxxxxx
+    while(numDigitsAboveDP > 1)
+    {
+     numDigitsAboveDP--;
+     num/=10;
+    }
+    
+    for(int i=(negative?1:0);i<6;i++) {
+      //Digit is just floor(num)
+      uint8_t digit = floor(num);
+      segstates[i] = numbersToSegments[digit];    
+      
+      num = num - digit;
+      num = num * 10;
+    
+    }  
+    
+    //.Add the decimal place. Only works for >1
+    segstates[(uint8_t)floor(base10log)]|=0b10000000;
+    
+  }
+    
+  
+  
+  
+  
+  
+}
+
 /*
 Improving Accuracy
 While the large tolerance of the internal 1.1 volt reference greatly limits the accuracy of this measurement, for individual projects we can compensate for greater accuracy. To do so, simply measure your Vcc with a voltmeter and with our readVcc() function. Then, replace the constant 1125300L with a new constant:
@@ -590,7 +768,7 @@ void goSleepUntilButton() {
   
   
   //No clock source for Timer/Counter 1
- // TCCR1B &= ~((1 << CS10) | (1 << CS11) | (1 << CS12));
+ TCCR1B &= ~((1 << CS10) | (1 << CS11) | (1 << CS12));
   
   power_timer1_disable();
   
@@ -646,7 +824,7 @@ void goSleepUntilButton() {
   }
   
   power_timer1_enable();
- // TCCR1B |= (1 << CS10);
+  TCCR1B |= (1 << CS10);
   
   
   power_timer0_enable();
@@ -658,4 +836,18 @@ void goSleepUntilButton() {
   DIDR0 = 0; //Enable digital input buffers on all ADC0-ADC5 pins
   DIDR1 &= ~((1<<AIN1D)|(1<<AIN0D)); //Enable digital input buffer on AIN1/0
 
+}
+
+void showLowBatteryWarning() {
+  
+ segstates[0] = 0b00111000;// L
+ segstates[1] = 0b11011100;// o.
+   
+ segstates[2] = 0b01111100;// b
+ segstates[3] = 0b01110111;// A
+ segstates[4] = 0b01111000;// t
+ segstates[5] = 0b01111000;// t
+ 
+ 
+  
 }
