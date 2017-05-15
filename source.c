@@ -35,7 +35,7 @@ const uint8_t segs[8] = {
 const uint8_t cols[6] = {
 		4,5,A2,A3,A4,A5};
 
-const uint8_t numbersToSegments[11] =
+const uint8_t number[11] =
 {
 		/*0*/  0b00111111,
 		/*1*/  0b00000110,
@@ -311,7 +311,6 @@ float makePositivef(float i){return(i<0?-i:i);}
 
 #define NO_OPERATION 42
 
-//Whole numbers only for now...
 void calculatorMode() {
 
 	//Start at zero.
@@ -333,6 +332,9 @@ void calculatorMode() {
 
 	uint8_t operation = NO_OPERATION;
 
+	//Entering a negative number?
+	boolean enteringNegativeNumber = false;
+
 	//Loop until we're finished, and re-enter power save mode.
 	while(1==1) {
 
@@ -353,6 +355,7 @@ void calculatorMode() {
 				iEntNum = 0;
 				fCurrNum = 0.0f;
 				fEntNum = 0.0f;
+				enteringNegativeNumber = false;
 				sleepTime = millis();
 			}
 		}
@@ -364,12 +367,23 @@ void calculatorMode() {
 		if (keypadButton < 10)
 		{
 
+			if(enteringNegativeNumber)
+			{
+				iEntNum = makePositive(iEntNum);
+				fEntNum = makePositivef(fEntNum);
+			}
+
 			iEntNum = iEntNum * 10;
 			iEntNum = iEntNum + keypadButton;
 
 			fEntNum = fEntNum * 10;
 			fEntNum = fEntNum + keypadButton;
 
+			if(enteringNegativeNumber)
+			{
+				iEntNum = makeNegative(iEntNum);
+				fEntNum = makeNegativef(fEntNum);
+			}
 			displayInt64(iEntNum);
 
 		}
@@ -377,47 +391,63 @@ void calculatorMode() {
 		//It's not a number, it's a special button.
 		else {
 
-			if(justPressedEquals && (keypadButton != KEY_EQ)){} else {
+			//Is it an operation, or a negative sign?
+			if((iEntNum == 0) && (keypadButton == KEY_SUB))
+			{
+				//We're entering a negative number...
+				enteringNegativeNumber = true;
+				Serial.println("Entering a negative number");
+			}
 
-			switch((operation)){
-			case NO_OPERATION:
-				iCurrNum = iEntNum;
-				fCurrNum = fEntNum;
-				break;
-			case KEY_ADD:
-				iCurrNum = iCurrNum + iEntNum;
-				fCurrNum = fCurrNum + fEntNum;
-				break;
-			case KEY_SUB:
-				iCurrNum = iCurrNum - iEntNum;
-				fCurrNum = fCurrNum - fEntNum;
-				break;
-			case KEY_MUL:
-				iCurrNum = iCurrNum * iEntNum;
-				fCurrNum = fCurrNum * fEntNum;
-				break;
-			case KEY_DIV:
-				if ((iEntNum == 0)||(fEntNum == 0)) {
-					displayMessage(MSG_ERROR);
-					_delay_ms(3000);
-					button_pressed = true;
+			else {
+				if (justPressedEquals && (keypadButton != KEY_EQ)){}
+
+				else {
+					//We've pressed an operation
+
+					switch((operation)){
+					case NO_OPERATION:
+						iCurrNum = iEntNum;
+						fCurrNum = fEntNum;
+						break;
+					case KEY_ADD:
+						iCurrNum = iCurrNum + iEntNum;
+						fCurrNum = fCurrNum + fEntNum;
+						break;
+					case KEY_SUB:
+						iCurrNum = iCurrNum - iEntNum;
+						fCurrNum = fCurrNum - fEntNum;
+						break;
+					case KEY_MUL:
+						iCurrNum = iCurrNum * iEntNum;
+						fCurrNum = fCurrNum * fEntNum;
+						break;
+					case KEY_DIV:
+						if ((iEntNum == 0)||(fEntNum == 0)) {
+							displayMessage(MSG_ERROR);
+							_delay_ms(3000);
+							button_pressed = true;
+						}
+						iCurrNum = iCurrNum / iEntNum;
+						fCurrNum = fCurrNum / fEntNum;
+						break;
+					}
 				}
-				iCurrNum = iCurrNum / iEntNum;
-				fCurrNum = fCurrNum / fEntNum;
-				break;
-			}}
 
-			if(keypadButton == KEY_EQ){
-				justPressedEquals = true;
-				//This leads to one subtle problem
-				//Say you do 2+2 ==  +3
-				//Calc does 2+2+2+2 +3
-				//Expected behaviour 2+2+2 +3
-			} else {
-				justPressedEquals = false;
-				iEntNum = 0;
-				fEntNum = 0.0f;
-				operation = keypadButton;
+				if(keypadButton == KEY_EQ){
+					justPressedEquals = true;
+					//This leads to one subtle problem
+					//Say you do 2+2 ==  +3
+					//Calc does 2+2+2+2 +3
+					//Expected behaviour 2+2+2 +3
+				} else {
+					justPressedEquals = false;
+					iEntNum = 0;
+					fEntNum = 0.0f;
+					enteringNegativeNumber = false;
+					operation = keypadButton;
+				}
+
 			}
 			displayDouble(fCurrNum);
 
@@ -593,7 +623,7 @@ void displayPressedKey() {
 
 	if (k<10) {
 
-		segstates[0] = numbersToSegments[k];
+		segstates[0] = number[k];
 		segstates[1] = 0;
 		segstates[2] = 0;
 		segstates[3] = 0;
@@ -888,23 +918,23 @@ void calculateTimezoneCorrection() {
 
 void displayDate() {
 
-	segstates[0] = numbersToSegments[(tzc_day/10)%10];
-	segstates[1] = numbersToSegments[tzc_day%10] WITH_DECIMAL_PLACE;
-	segstates[2] = numbersToSegments[(tzc_month/10)%10];
-	segstates[3] = numbersToSegments[tzc_month%10] WITH_DECIMAL_PLACE;
-	segstates[4] = numbersToSegments[((tzc_year-2000)/10)%10];//OK up to 2099
-	segstates[5] = numbersToSegments[(tzc_year-2000)%10];
+	segstates[0] = number[(tzc_day/10)%10];
+	segstates[1] = number[tzc_day%10] WITH_DECIMAL_PLACE;
+	segstates[2] = number[(tzc_month/10)%10];
+	segstates[3] = number[tzc_month%10] WITH_DECIMAL_PLACE;
+	segstates[4] = number[((tzc_year-2000)/10)%10];//OK up to 2099
+	segstates[5] = number[(tzc_year-2000)%10];
 
 }
 
 void displayTime() {
 
-	segstates[0] = numbersToSegments[(tzc_hours/10)%10];
-	segstates[1] = numbersToSegments[tzc_hours%10] WITH_DECIMAL_PLACE;
-	segstates[2] = numbersToSegments[(minutes/10)%10];
-	segstates[3] = numbersToSegments[minutes%10] WITH_DECIMAL_PLACE;
-	segstates[4] = numbersToSegments[(seconds/10)%10];
-	segstates[5] = numbersToSegments[seconds%10];
+	segstates[0] = number[(tzc_hours/10)%10];
+	segstates[1] = number[tzc_hours%10] WITH_DECIMAL_PLACE;
+	segstates[2] = number[(minutes/10)%10];
+	segstates[3] = number[minutes%10] WITH_DECIMAL_PLACE;
+	segstates[4] = number[(seconds/10)%10];
+	segstates[5] = number[seconds%10];
 
 }
 
@@ -922,7 +952,7 @@ void displayInt64(int64_t num) {
 
 	//Something later on assumes non-zero.
 	if(num == 0) {
-		segstates[5] = numbersToSegments[0];
+		segstates[5] = number[0];
 		return;
 	}
 
@@ -951,13 +981,13 @@ void displayInt64(int64_t num) {
 		//Write digits.
 		for(int i=(negative?1:0);i<3;i++) {
 			uint8_t digit = floor(floaty);
-			segstates[i] = numbersToSegments[digit];
+			segstates[i] = number[digit];
 			floaty = floaty - digit;
 			floaty = floaty * 10;
 		}
 		//Final digit needs rounding to the nearest value (for example, if we're left with 1.55 it needs to round to 2
 		uint8_t digit = lround(floaty);
-		segstates[3] = numbersToSegments[digit];
+		segstates[3] = number[digit];
 
 
 
@@ -967,11 +997,11 @@ void displayInt64(int64_t num) {
 		if (exponent > 9) {
 			//Super-big. We'll consider the case where E10->E99 might need displaying
 			segstates[3] = 0b01111001;//E
-			segstates[4] = numbersToSegments[(exponent/10) % 10];
-			segstates[5] = numbersToSegments[exponent % 10];
+			segstates[4] = number[(exponent/10) % 10];
+			segstates[5] = number[exponent % 10];
 		} else {
 			segstates[4] = 0b01111001;//E
-			segstates[5] = numbersToSegments[exponent % 10];
+			segstates[5] = number[exponent % 10];
 		}
 	}
 	else
@@ -986,7 +1016,7 @@ void displayInt64(int64_t num) {
 			long digit = temp % mod;
 			temp = temp - digit;
 			digit = digit / (mod/10);
-			segstates[i] = numbersToSegments[digit];
+			segstates[i] = number[digit];
 			mod = mod * 10;
 		}
 	}
@@ -1000,6 +1030,12 @@ void displayDouble(double num) {
 	Serial.print(num);
 	Serial.print("\n");
 	//TODO remove multiple calculations with floating point numbers to improve accuracy of displayed numbers.
+
+	if(num == 0.0)
+	{
+		displayInt64(0);
+		return;
+	}
 
 	if(isnan(num))
 	{
@@ -1088,7 +1124,7 @@ void displayDouble(double num) {
 		for(int i=(negative?1:0);i<4;i++) {
 			//Digit is just floor(num)
 			uint8_t digit = floor(num);
-			segstates[i] = numbersToSegments[digit];
+			segstates[i] = number[digit];
 
 			num = num - digit;
 			num = num * 10;
@@ -1108,8 +1144,8 @@ void displayDouble(double num) {
 			//We need to display "E-XX"!
 			segstates[2] = 0b01111001;//E;
 			segstates[3] = 0b01000000; //-
-			segstates[4] = numbersToSegments[((-exp)/10) % 10];
-			segstates[5] = numbersToSegments[(-exp) % 10];
+			segstates[4] = number[((-exp)/10) % 10];
+			segstates[5] = number[(-exp) % 10];
 
 		}
 		else
@@ -1118,14 +1154,14 @@ void displayDouble(double num) {
 				segstates[3] = 0b01111001;//E
 				if(exp < 0){
 					segstates[4] = 0b01000000; //-
-					segstates[5] = numbersToSegments[(-exp)%10];
+					segstates[5] = number[(-exp)%10];
 				} else {
-				segstates[4] = numbersToSegments[(exp/10) % 10];
-				segstates[5] = numbersToSegments[exp % 10];
+					segstates[4] = number[(exp/10) % 10];
+					segstates[5] = number[exp % 10];
 				}
 			} else {
 				segstates[4] = 0b01111001;//E
-				segstates[5] = numbersToSegments[(uint8_t) floor(base10log) + 1];//Careful! Will get too big and start spewing garbage, and fails for -ve
+				segstates[5] = number[(uint8_t) floor(base10log) + 1];//Careful! Will get too big and start spewing garbage, and fails for -ve
 			}
 		}
 
@@ -1141,23 +1177,23 @@ void displayDouble(double num) {
 		Serial.print(numDigitsAboveDP);
 		Serial.print("\n");
 		if(numDigitsAboveDP > 0) {//Numbers bigger than 1 need to be normalised
-		int shift = (floor(base10log));
-		//We need to normalise this number, so that it is in the format X.XXXXX (decimal place drawn later)
+			int shift = (floor(base10log));
+			//We need to normalise this number, so that it is in the format X.XXXXX (decimal place drawn later)
 
-		while(shift > 0) {
-					num*=0.1;
-					shift--;
-				}
-		while(shift < 0) {
-					num*=10;
-					shift++;
-				}
+			while(shift > 0) {
+				num*=0.1;
+				shift--;
+			}
+			while(shift < 0) {
+				num*=10;
+				shift++;
+			}
 
 
 
-		Serial.print("New Num is ");
-		Serial.print(num);
-		Serial.print("\n");
+			Serial.print("New Num is ");
+			Serial.print(num);
+			Serial.print("\n");
 
 		}
 
@@ -1165,7 +1201,7 @@ void displayDouble(double num) {
 		for(int i=((negative)?1:0);i<6;i++) {
 			//Digit is just floor(num)
 			uint8_t digit = floor(num);
-			segstates[i] = numbersToSegments[digit];
+			segstates[i] = number[digit];
 
 			num = num - digit;
 			num = num * 10;
