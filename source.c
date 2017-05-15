@@ -1,5 +1,5 @@
 /*
- Calcuclock firmware v0.98 - Charlie Bruce, 2013
+ Calcuclock firmware v0.996 - Charlie Bruce, 2013-2014
 
  TECH NOTES:
 
@@ -10,31 +10,35 @@
  In deep sleep, virtually nothing but the low-level timekeeping stuff is running.
 
  Brown-out detection is off in sleep, on when running? Or do we use the ADC to check the battery level every so often?
- WDT disabled.
+ WDT is to be disabled in fuses.
 
  TODO stopwatch, finish calculation (floating-point), set mode
 
  */
 
 #include <avr/sleep.h>  //Needed for sleep_mode (switching the CPU into low-power mode)
-#include <avr/power.h>  //Needed for powering down perihperals such as the ADC, TWI and timers
+#include <avr/power.h>  //Needed for powering down peripherals such as the ADC, TWI and timers
 #include <stdint.h>     //Needed for uint8_t
 #include <util/delay.h> //Needed for small delays, using the function _delay_us and _delay_ms
 
-#include <math.h>
+#include <stdio.h>		//Needed for FILE definitions and printf declarations (debugging)
 
-//The state of each segment (A..DP for displays, left = 0, right = 5).
+#include <math.h>		//Needed for logarithms and powers
+
+//The state of each 7-segment display (A..DP for displays, left = 0, right = 5).
 volatile uint8_t segstates[6];
 
 //Has the CE button been pressed?
 volatile boolean button_pressed = false;
 
-//Pin numbers for the 7-segment display
-const uint8_t segs[8] = {
-		8,9,10,11,12,13,6,7};
-const uint8_t cols[6] = {
-		4,5,A2,A3,A4,A5};
+//Pin numbers for the 7-segment displays
+const uint8_t segs[8] = {8, 9, 10, 11, 12, 13, 6, 7};
+const uint8_t cols[6] = {4, 5, A2, A3, A4, A5};
 
+//Set the last bit to add a decimal point.
+#define WITH_DECIMAL_POINT |(1<<7)
+
+//These are the segment patterns that correspond with digits. LSB = A, MSB = DP
 const uint8_t number[11] =
 {
 		/*0*/  0b00111111,
@@ -54,11 +58,14 @@ const uint8_t number[11] =
 const uint8_t ceButton = 2;
 const uint8_t btnsA = A0;
 const uint8_t btnsB = A1;
+
+//Output pin for the LED/IR transmitter
 const uint8_t ledPin = 3;
 
 #define SEGMENT_OFF HIGH
 #define SEGMENT_ON LOW
 
+//We use a PNP transistor for controlling which display is on at a given time.
 #define COLUMN_OFF HIGH
 #define COLUMN_ON LOW
 
@@ -68,15 +75,28 @@ const uint8_t ledPin = 3;
 
 enum Days {
 	Sunday = 0,
-	Monday, Tuesday, Wednesday, Thursday, Friday, Saturday
+	Monday,
+	Tuesday,
+	Wednesday,
+	Thursday,
+	Friday,
+	Saturday
 };
 
 enum Months {
 	January = 1,
-	February, March, April, May, June, July, August, September, October, November, December
+	February,
+	March,
+	April,
+	May,
+	June,
+	July,
+	August,
+	September,
+	October,
+	November,
+	December
 };
-
-#define WITH_DECIMAL_PLACE |(1<<7)
 
 enum Keys {
 	KEY_0 = 0,
@@ -120,9 +140,9 @@ volatile uint8_t minutes = 5;
 volatile uint8_t seconds = 0;
 
 //Date variables - GMT
-volatile int year = 2013;
-volatile int month = 9;
-volatile int day = 6;
+volatile int year = 2014;
+volatile int month = 5;
+volatile int day = 16;
 
 //Timezone-corrected hours, days, months. Minutes and seconds don't change in different timezones
 uint8_t tzc_hours = 0;
@@ -137,17 +157,12 @@ uint8_t timezone = 1;
 //Below this battery voltage, a warning should be displayed. 2.6v (2600) is a safe number. You can go lower but the device may behave unpredictably.
 #define MIN_SAFE_BATTERY_VOLTAGE 2400
 
-// we need fundamental FILE definitions and printf declarations
-#include <stdio.h>
-
 // create a FILE structure to reference our UART output function
+static FILE uartout = {0};
 
-static FILE uartout = {0} ;
-
-static int uart_putchar (char c, FILE *stream)
-{
-	Serial.write(c) ;
-	return 0 ;
+static int uart_putchar(char c, FILE *stream) {
+	Serial.write(c);
+	return 0;
 }
 
 void setup(){
@@ -165,9 +180,8 @@ void setup(){
 	//IR LED is an output
 	pinMode(ledPin, OUTPUT);
 
-	//C/CE/ON button
+	//C/CE/ON button is an input, with an internal pullup resistor
 	pinMode(ceButton, INPUT);
-	//Internal pull-up on this button.
 	digitalWrite(ceButton, HIGH);
 
 	//Set up the 7-segment display pins as outputs.
@@ -175,6 +189,7 @@ void setup(){
 		pinMode(segs[i], OUTPUT);
 		digitalWrite(segs[i], SEGMENT_OFF);
 	}
+
 	//Set the transistor bases as outputs too.
 	for(uint8_t i=0;i<6;i++){
 		pinMode(cols[i], OUTPUT);
@@ -184,8 +199,11 @@ void setup(){
 	//Turn off unused hardware on the chip to save power.
 	power_twi_disable();
 	power_spi_disable();
+
+	//USART should be powered when serial debugging is enabled.
 	//power_usart0_disable();
 
+	//Configure the serial port for debugging
 	Serial.begin(9600);
 	// fill in the UART file descriptor with pointer to writer.
 	fdev_setup_stream (&uartout, uart_putchar, NULL, _FDEV_SETUP_WRITE);
@@ -206,20 +224,19 @@ void setup(){
 	ASSR = (1<<AS2); //Enable asynchronous operation
 	TIMSK2 = (1<<TOIE2); //Enable the timer 2 overflow interrupt
 
-	//Interrupt when CE button is pressed
+	//Interrupt when the CE button is pressed
 	EICRA = (1<<ISC01); //falling edge (button press, not release)
 	EIMSK = (1<<INT0); //Enable the interrupt INT0
 
 	//Enable global interrupts
 	sei();
+
 }
 
 void loop() {
 
-
 	//turn off display segments, any pullups (except on CE), screen timer, timer0, ADC, USART (leave only timer2 and INT0 running)
 	goSleepUntilButton();
-
 
 	//We've been woken up by a CE-button press.
 	uint8_t mode = 0;
@@ -227,7 +244,7 @@ void loop() {
 	_delay_ms(150);
 	button_pressed = false;
 
-	//Record the time - after 2.5s of no presses, do whatever mode we're in
+	//Record the time - after 2.5s of no presses, enter whatever mode is being displayed
 	long sleepTime = millis();
 	while (millis() - sleepTime < 2500) {
 		if(button_pressed) {
@@ -248,7 +265,7 @@ void loop() {
 				break;
 
 			}
-			_delay_ms(150);//Debounce
+			_delay_ms(150); //Debounce
 			button_pressed = false;
 			sleepTime = millis();
 		}
@@ -257,7 +274,7 @@ void loop() {
 	//Single press of CE button enters calculator mode, double press enters clock mode, triple press triggers TV-B-GONE, holding enters clockset mode.
 
 
-	//Clockset mode should account for BST or NOT-BST (whenever the hour, day or month increments, check against the BST conditions?)
+	//Clock-set mode should account for BST or NOT-BST (whenever the hour, day or month increments, check against the BST conditions?)
 	//Or just require user intervention...
 
 	switch(mode){
@@ -274,10 +291,10 @@ void loop() {
 		setMode();
 	}
 
+	//Once the above operation has completed or timed out, we will reach this point in the code.
 
 	//Measure the battery voltage - if we're at less than MIN_SAFE_BATTERY_VOLTAGE, show a warning.
-
-	//Note that this measurement happens when the LECD is OFF - this prevents the current draw of the 7-segment displays from affecting the measurements.
+	//Note that this measurement happens when the display is OFF - this prevents the current draw of the 7-segment displays from affecting the measurements.
 	long vcc = 0;
 	blankDisplay();
 	//if ((vcc = readVcc()) < MIN_SAFE_BATTERY_VOLTAGE) {
@@ -295,7 +312,8 @@ void loop() {
 	// }
 
 }
-//NOT YET DONE
+
+//Can't fit remote and calculator modes in to memory at the same time.
 void remoteMode(){
 
 	displayMessage(MSG_TODO);
@@ -307,7 +325,7 @@ void clockMode() {
 
 	//CLOCK MODE
 
-	//Accounta for timezone (tzc_ means timezone-corrected)
+	//Accounts for timezone (tzc_ means timezone-corrected)
 	//Seconds, minutes never change between timezones, only hours/days/months
 	//This only allows for positive timezone change of (timezone) hours WRT. GMT. Wouldn't try this over more than a 23 hour shift
 
@@ -326,6 +344,7 @@ void clockMode() {
 
 }
 
+//Helper functions to make a number positive or negative.
 int64_t makeNegative(int64_t i){return(i<0?i:-i);}
 int64_t makePositive(int64_t i){return(i<0?-i:i);}
 float makeNegativef(float i){return(i<0?i:-i);}
@@ -502,7 +521,7 @@ void calculatorMode() {
 				if(keypadButton == KEY_EQ){
 					justPressedEquals = true;
 					//This leads to one subtle problem
-					//Say you do 2+2 ==  +3
+					//Say you type 2 + 2 = = + 3
 					//Calc does 2+2+2+2 +3
 					//Expected behaviour 2+2+2 +3
 				} else {
@@ -533,31 +552,30 @@ void calculatorMode() {
 	}
 
 
-
-
 }
 
 void displayBest(int64_t i, float f) {
-	//Compare the integer and floating answers. IF they're within a small amount of each other, we can assume the integer is correct (FP error)
+	//Compare the integer and floating answers. If they're within a very small amount of each other, we can assume the integer is correct (FP error)
+	//NOTE THAT THIS PREVENTS VERY SMALL NUMBERS BEING SHOWN INTENTIONALLY!!! Work out the sensible limit - should be near FLOAT_MIN
 	if(abs(i - f) < 0.001)
 	{
 		displayInt64(i);
 		return;
 	}
 
-
 	//If the integer is close to the float, display it.
 	int64_t cast = (int64_t) f;
 
-	if(abs(cast - f) < 0.001)
+	if(abs(cast - f) < 0.000001)
 	{
 		displayInt64(cast);
 		return;
 	}
 
-
 	displayDouble(f);
 }
+
+//Returns 1 if the number is positive, 0 if it is zero, and -1 if it is negative.
 int sign(int64_t num){
 	if(num > 0)
 		return +1;
@@ -565,6 +583,7 @@ int sign(int64_t num){
 		return -1;
 	return 0;
 }
+
 //Mode for setting the clock time.
 void setMode() {
 
@@ -576,19 +595,18 @@ void setMode() {
 	uint8_t l_months = month;
 	int l_years = year;
 
-
 	//First enter date...
 	displayMessage(MSG_DATE);
 	_delay_ms(2500);
 	segstates[0] = number[(l_days/10)%10];
-	segstates[1] = number[(l_days)%10] WITH_DECIMAL_PLACE;
+	segstates[1] = number[(l_days)%10] WITH_DECIMAL_POINT;
 	segstates[2] = number[(l_months/10)%10];
-	segstates[3] = number[(l_months)%10] WITH_DECIMAL_PLACE;
+	segstates[3] = number[(l_months)%10] WITH_DECIMAL_POINT;
 	segstates[4] = number[((l_years-2000)/10)%10];
 	segstates[5] = number[((l_years-2000))%10];
 
 	_delay_ms(250);
-	segstates[0] = 0;//Blank the first digit.
+	segstates[0] = 0;	//Blank the first digit.
 
 	long sleepTime = millis();
 	uint8_t kpb = NO_KEY;
@@ -630,8 +648,7 @@ void setMode() {
 	int hypotheticalMonths  = values[2]*10+values[3];
 	int hypotheticalYears   = values[4]*10+values[5] + 2000;
 
-	//TODO check if valid date, correct if invalid
-
+	//Check if the given date is valid.
 	if(!dateIsValid(hypotheticalYears, hypotheticalMonths, hypotheticalDays))
 	{
 		//Note there's no way for the year to be invalid, I believe.
@@ -648,16 +665,14 @@ void setMode() {
 	month = hypotheticalMonths;
 	year = hypotheticalYears;
 
-
-
 	//Repeat for the time.
 
 	displayMessage(MSG_TIME);
 	_delay_ms(2500);
 	segstates[0] = number[(l_hours/10)%10];
-	segstates[1] = number[(l_hours)%10] WITH_DECIMAL_PLACE;
+	segstates[1] = number[(l_hours)%10] WITH_DECIMAL_POINT;
 	segstates[2] = number[(l_minutes/10)%10];
-	segstates[3] = number[(l_minutes)%10] WITH_DECIMAL_PLACE;
+	segstates[3] = number[(l_minutes)%10] WITH_DECIMAL_POINT;
 	segstates[4] = number[((l_seconds)/10)%10];
 	segstates[5] = number[(l_seconds)%10];
 
@@ -710,7 +725,7 @@ void setMode() {
 	else
 		Serial.print("Not BST - setting directly.");
 
-	hours   = (hypotheticalHours) % 24; //Technically should subtract one from the day if less then midnight, etc. Edge case ignored for simplicity.
+	hours   = (hypotheticalHours) % 24; //Technically, should subtract one from the day if less then midnight, etc. Edge case ignored for simplicity.
 	minutes = hypotheticalMinutes % 60;
 	seconds = hypotheticalSeconds % 60;
 
@@ -722,6 +737,8 @@ void setMode() {
 	_delay_ms(2000);
 
 }
+
+//TODO make this more efficient by having an array in PROGMEM with MSG_... being an offset in that array.
 void displayMessage(uint8_t msg) {
 
 	switch(msg) {
@@ -850,89 +867,6 @@ void displayMessage(uint8_t msg) {
 
 }
 
-void displayPressedKey() {
-
-	uint8_t k = readKeypad();
-
-
-	while (k == NO_KEY)
-		k = readKeypad();
-
-	if (k<10) {
-
-		segstates[0] = number[k];
-		segstates[1] = 0;
-		segstates[2] = 0;
-		segstates[3] = 0;
-		segstates[4] = 0;
-		segstates[5] = 0;
-
-	}
-
-	if(k == KEY_DP) {
-
-		segstates[0] = 0b01011110;
-		segstates[1] = 0b01110011;
-		segstates[2] = 0;
-		segstates[3] = 0;
-		segstates[4] = 0;
-		segstates[5] = 0;
-
-	}
-
-	if(k == KEY_EQ) {
-
-		segstates[0] = 0b01111001;
-		segstates[1] = 0b01100111;
-		segstates[2] = 0;
-		segstates[3] = 0;
-		segstates[4] = 0;
-		segstates[5] = 0;
-
-	}
-
-	if(k == KEY_ADD) {
-
-		segstates[0] = 0b01110111;
-		segstates[1] = 0b01011110;
-		segstates[2] = 0b01011110;
-		segstates[3] = 0;
-		segstates[4] = 0;
-		segstates[5] = 0;
-
-	}
-	if(k == KEY_SUB) { //Display the text Sub
-
-		segstates[0] = 0b01101101;
-		segstates[1] = 0b00011100;
-		segstates[2] = 0b01111100;
-		segstates[3] = 0;
-		segstates[4] = 0;
-		segstates[5] = 0;
-
-	}
-	if(k == KEY_MUL) { //Display the text Tpl
-
-		segstates[0] = 0b01111000;
-		segstates[1] = 0b01110011;
-		segstates[2] = 0b00111000;
-		segstates[3] = 0;
-		segstates[4] = 0;
-		segstates[5] = 0;
-
-	}
-	if(k == KEY_DIV) { //Display the text Div
-
-		segstates[0] = 0b01011110;
-		segstates[1] = 0b00010000;
-		segstates[2] = 0b00011100;
-		segstates[3] = 0;
-		segstates[4] = 0;
-		segstates[5] = 0;
-
-	}
-	_delay_ms(2000);
-}
 
 
 
@@ -944,7 +878,7 @@ void displayPressedKey() {
 SIGNAL(TIMER2_OVF_vect){
 
 	seconds++;
-	minutes +=(seconds/60);
+	minutes +=(seconds/60); //Use integer division intentionally here.
 	seconds = seconds % 60;
 	hours += (minutes/60);
 	minutes = minutes % 60;
@@ -991,30 +925,32 @@ SIGNAL(TIMER2_OVF_vect){
 
 }
 
-//The interrupt occurs when you push the button
-SIGNAL(INT0_vect){
+//This interrupt occurs when you push the CE button
+SIGNAL(INT0_vect) {
 	button_pressed = true;
 }
 
 
-//This interrupt (overflow) should happen once every few milliseconds.
+//This interrupt (overflow) should happen once every few milliseconds, when the fast timer overflows
 //Display update - works with an even brightness.
-SIGNAL(TIMER1_OVF_vect){
+SIGNAL(TIMER1_OVF_vect) {
 	updateDisplay();
 	TCNT1 = PWM_TIME;
 }
 
 
 //TODO Brightness control
-//TODO optimise - this is an interrupt, so it should be FAST otherwise we'll miss button C/CE button presses
-//(if this consumes more than a few hundred cycles, it's using too many. This runs every 4000 cycles so it shouldn't take moe than 400 or so.
+//This interrupt should be FAST.
+//(if this consumes more than a few hundred cycles, it's using too many. This runs every 4000 cycles so it shouldn't take more than 400 or so.
 //OR we could nest an interrupt, at the risk of making things VERY messy...
 volatile uint8_t onDisplay = 0;
+//TODO inline?
 void updateDisplay() {
 
 	digitalWrite(cols[onDisplay],COLUMN_OFF);
 	onDisplay = (onDisplay+1)%6;
 
+	//TODO this can be optimised at the expense of readability - changing to direct port modification, rather than digitalWrite.
 	for(uint8_t s=0;s<8;s++) {
 		digitalWrite(segs[s], ((segstates[onDisplay] & (1 << s))?SEGMENT_ON:SEGMENT_OFF));
 	}
@@ -1038,9 +974,8 @@ void updateDisplay() {
 
 static const Keys keymap[] = {
 		KEY_7, KEY_4, KEY_1, KEY_0, KEY_8, KEY_5, KEY_2, KEY_DP, KEY_9, KEY_6, KEY_3, KEY_EQ, KEY_ADD, KEY_SUB, KEY_MUL, KEY_DIV, NO_KEY};
-/*
-Read the value of the keypad
- */
+
+//Read the value of the keypad
 uint8_t readKeypad(void) {
 	//Switch the ADC on
 
@@ -1085,7 +1020,6 @@ boolean inBst(int y, int m, int d) {
 	if( (m==April) || (m==May) || (m==June) || (m==July) || (m==August) || (m==September) )
 		return true;
 
-
 	//Find the last Sunday of the month (March or Cotober), by counting back from the 31st
 	int i = 31;
 	while (dayOfWeek(y,m,i) != Sunday)
@@ -1107,9 +1041,7 @@ boolean inBst(int y, int m, int d) {
 
 }
 
-/*
- * Is the given date valid (ie, does it exist on the calendar);
- */
+//Is the given date valid (ie, does it exist on the calendar)?
 boolean dateIsValid(int y, int m, int d) {
 
 	printf("Testing date d=%i, m=%i, y=%i \n", d, m, y);
@@ -1138,6 +1070,7 @@ boolean dateIsValid(int y, int m, int d) {
 	printf("Valid date\n");
 	return true;
 }
+
 //Is the current year a leap year? ie does February have a 29th?
 boolean leapYear(int y) {
 	//Here's the weird set of rules for determining if the year is a leap year...
@@ -1187,9 +1120,9 @@ void calculateTimezoneCorrection() {
 void displayDate() {
 
 	segstates[0] = number[(tzc_day/10)%10];
-	segstates[1] = number[tzc_day%10] WITH_DECIMAL_PLACE;
+	segstates[1] = number[tzc_day%10] WITH_DECIMAL_POINT;
 	segstates[2] = number[(tzc_month/10)%10];
-	segstates[3] = number[tzc_month%10] WITH_DECIMAL_PLACE;
+	segstates[3] = number[tzc_month%10] WITH_DECIMAL_POINT;
 	segstates[4] = number[((tzc_year-2000)/10)%10];//OK up to 2099
 	segstates[5] = number[(tzc_year-2000)%10];
 
@@ -1198,9 +1131,9 @@ void displayDate() {
 void displayTime() {
 
 	segstates[0] = number[(tzc_hours/10)%10];
-	segstates[1] = number[tzc_hours%10] WITH_DECIMAL_PLACE;
+	segstates[1] = number[tzc_hours%10] WITH_DECIMAL_POINT;
 	segstates[2] = number[(minutes/10)%10];
-	segstates[3] = number[minutes%10] WITH_DECIMAL_PLACE;
+	segstates[3] = number[minutes%10] WITH_DECIMAL_POINT;
 	segstates[4] = number[(seconds/10)%10];
 	segstates[5] = number[seconds%10];
 
@@ -1324,7 +1257,6 @@ void displayDouble(double num) {
 
 	}
 
-
 	//Clear the screen
 	segstates[0] = 0;
 	segstates[1] = 0;
@@ -1403,8 +1335,6 @@ void displayDouble(double num) {
 
 
 
-
-
 		int exp = floor(base10log)+1;
 
 
@@ -1457,8 +1387,6 @@ void displayDouble(double num) {
 				shift++;
 			}
 
-
-
 			Serial.print("New Num is ");
 			Serial.print(num);
 			Serial.print("\n");
@@ -1489,10 +1417,7 @@ void displayDouble(double num) {
 		}
 	}
 
-
 	//TODO Sprintf or fmt_fp (format float point)
-
-
 
 }
 
@@ -1535,12 +1460,10 @@ long readVcc() {
 	return result; // Vcc in millivolts
 }
 
-/*
- *  Go to sleep (low power) and don't leave this function intil the C/CE/ON button  is pressed.
- */
+//Go to sleep (low power) and don't leave this function intil the C/CE/ON button  is pressed.
 void goSleepUntilButton() {
 
-	//Switch Timer1 off
+	//Switch Timer1 off?
 
 
 	//No clock source for Timer/Counter 1
@@ -1550,8 +1473,6 @@ void goSleepUntilButton() {
 
 	//Switch timer0 off
 	power_timer0_disable();
-
-
 
 	//Switch the segments off
 	//All inputs, no pullups
@@ -1566,7 +1487,6 @@ void goSleepUntilButton() {
 
 
 	//Switch ADC off
-
 	ADCSRA &= ~(1<<ADEN); //Disable ADC
 	ACSR = (1<<ACD); //Disable the analog comparator
 	DIDR0 = 0x3F; //Disable digital input buffers on all ADC0-ADC5 pins
@@ -1614,6 +1534,8 @@ void goSleepUntilButton() {
 
 }
 
+//Temporarily blank and unblank the display.
+//This is used when measuring the battery voltage, to prevent the current draw of the display from affecting the reading.
 
 uint8_t blankMemory[6];
 void blankDisplay() {
@@ -1632,5 +1554,4 @@ void unblankDisplay() {
 	}
 
 }
-
 
