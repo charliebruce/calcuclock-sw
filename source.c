@@ -97,7 +97,7 @@ enum Keys {
 //Time variables - GMT - 24-hour
 
 volatile uint8_t hours = 01;
-volatile uint8_t minutes = 35;
+volatile uint8_t minutes = 17;
 volatile uint8_t seconds = 00;
 
 
@@ -226,39 +226,6 @@ void loop() {
     displayTime();
     _delay_ms(10);
   }
-
-
-  //Press the button again to set the time.
-  if(button_pressed) {
-   // THIS STOPS THE DISPLAY UPDATING cbi();//Don't want the time updating.
-   button_pressed = false;
-   //TODO sanitise
-   uint8_t hr = 0;
-   
-   uint8_t readval = readKeypad();  
-   while(readval == NO_KEY)
-     readval = readKeypad();
-     
-   hr = 10 * readval;
-   
-   while(readKeypad()!=NO_KEY)
-     ;
-   
-   _delay_ms(100); //Debounce
-   
-     readval = readKeypad();
-     while(readval == NO_KEY)
-       readval = readKeypad();
-   
-   hours = hr + readval;
-   hours = hours % 24;
-   
-    calculateTimezoneCorrection();
-    displayTime();
-   
-    sei();  
-  }
-        
         
         
         //  segstates[5] = numbersToSegments[readKeypad()];
