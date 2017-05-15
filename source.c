@@ -108,17 +108,19 @@ enum Messages {
 	MSG_DONE,
 	MSG_ERROR,
 	MSG_REMOTE,
+	MSG_POSINF,
+	MSG_NEGINF,
 };
 
 //Time variables - GMT - 24-hour. For example, to enter 12:05, in Summer time, you'd enter hours = 11; minutes = 5; (do NOT set to 05! 05 is processed differently to 5!)
-volatile uint8_t hours = 12;
-volatile uint8_t minutes = 19;
+volatile uint8_t hours = 11;
+volatile uint8_t minutes = 5;
 volatile uint8_t seconds = 0;
 
 //Date variables - GMT
 volatile int year = 2013;
 volatile int month = 9;
-volatile int day = 12;
+volatile int day = 6;
 
 //Timezone-corrected hours, days, months. Minutes and seconds don't change in different timezones
 uint8_t tzc_hours = 0;
@@ -451,7 +453,11 @@ void setTime() {
 		while((kpb = readKeypad()) == NO_KEY) {
 			if ((millis() - sleepTime) > 15000)
 				return; //After 15s go to sleep again, without saving the changes to the time.
+
 		}
+
+		//
+
 	}
 
 	//Save into GMT time
@@ -540,6 +546,24 @@ void displayMessage(uint8_t msg) {
 		segstates[1] = 0b01111000;// t
 		segstates[2] = 0b01010000;// r
 		segstates[3] = 0b00110000;//l
+		break;
+
+	case MSG_POSINF:
+		segstates[0] = 0b01110011;// P
+		segstates[1] = 0b01011100;// o
+		segstates[2] = 0b01101101;// s
+		segstates[3] = 0b00010000;// i
+		segstates[4] = 0b01010100;// n
+		segstates[5] = 0b01110001;// f
+		break;
+
+	case MSG_NEGINF:
+		segstates[0] = 0b01010100;// n
+		segstates[1] = 0b01111001;// e
+		segstates[2] = 0b01101111;// g
+		segstates[3] = 0b00010000;// i
+		segstates[4] = 0b01010100;// n
+		segstates[5] = 0b01110001;// f
 		break;
 
 	}
@@ -972,6 +996,17 @@ void displayDouble(double num) {
 		return;
 	}
 
+	if(isinf(num))
+	{
+		if (isinf(num) == -1)
+			displayMessage(MSG_NEGINF);
+		if (isinf(num) == 1)
+			displayMessage(MSG_POSINF);
+
+		return;
+
+	}
+
 
 	//Clear the screen
 	segstates[0] = 0;
@@ -1061,37 +1096,43 @@ void displayDouble(double num) {
 
 	}
 	else {
-		Serial.println("Displaying non-exponential");
-		int numDigitsAboveDP = (floor(base10log) + 1);
+		Serial.println("Displaying non-exponential number");
+		//Floor rounds down to the nearest integer
+		//-1.5 goes DOWN to -2
+		int numDigitsAboveDP = (floor(base10log));
+		Serial.print("NDADP = ");
+		Serial.print(numDigitsAboveDP);
+		Serial.print("\n");
+		if(numDigitsAboveDP > 0) {//Numbers bigger than 1 need to be normalised
+		int shift = (floor(base10log));
+		//We need to normalise this number, so that it is in the format X.XXXXX (decimal place drawn later)
 
-		//normalise to x.xxxxxx
-		while(numDigitsAboveDP > 1)
-		{
-			numDigitsAboveDP--;
-			num*=0.1;
-		}
-		while(numDigitsAboveDP < 1)
-		{
-			numDigitsAboveDP++;
-			num*=0.1;
-		}
-
-		//TODO why is this necessary when working with negative numbers?
-		if((num < 1) && negative)
-			num = num * 10;
+		while(shift > 0) {
+					num*=0.1;
+					shift--;
+				}
+		while(shift < 0) {
+					num*=10;
+					shift++;
+				}
 
 
-		Serial.print("New Num ");
+
+		Serial.print("New Num is ");
 		Serial.print(num);
 		Serial.print("\n");
 
-		for(int i=(negative?1:0);i<6;i++) {
+		}
+
+		//Now print the number, from the format X.XXXXX on the screen
+		for(int i=((negative)?1:0);i<6;i++) {
 			//Digit is just floor(num)
 			uint8_t digit = floor(num);
 			segstates[i] = numbersToSegments[digit];
 
 			num = num - digit;
 			num = num * 10;
+			num = num +0.0000001;//Does this help?
 
 		}
 
