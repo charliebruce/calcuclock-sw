@@ -26,6 +26,10 @@ WDT disabled.
 //The state of each segment (A..DP for devices, left = 0, right = 5).
 volatile uint8_t segstates[6];
 
+//Has the CE button been pressed?
+volatile boolean button_pressed = false;
+
+
 //Pin numbers for the 7-segment display
 const uint8_t segs[8] = {8,9,10,11,12,13,6,7};
 const uint8_t cols[6] = {4,5,A2,A3,A4,A5};
@@ -92,20 +96,33 @@ enum Keys {
 
 //Time variables - GMT - 24-hour
 
-volatile uint8_t hours = 00;
-volatile uint8_t minutes = 59;
-volatile uint8_t seconds = 30;
+volatile uint8_t hours = 01;
+volatile uint8_t minutes = 35;
+volatile uint8_t seconds = 00;
 
 
 //Date variables - GMT
 volatile int year = 2013;
 volatile int month = 7;
-volatile int day = 28;
+volatile int day = 29;
+
+
+
+uint8_t tzc_hours = 0;
+uint8_t tzc_day = 1;
+uint8_t tzc_month = 1;
+int tzc_year = 2000;
+
+
 
 //Timezone - 0 is GMT, 1 is BST
 //where 1 means that the displayed time is one hour greater than GMT
 uint8_t timezone = 1;
 void setup(){
+
+        //We can't sleep any more deeply than this, or else we'll start losing track of trime.
+        set_sleep_mode(SLEEP_MODE_PWR_SAVE);
+        sleep_enable();
 
 	//All inputs, no pullups
 	for(int x=1;x<18;x++){
@@ -123,20 +140,22 @@ void setup(){
 	}
 	for(uint8_t i=0;i<6;i++){
 		pinMode(cols[i], OUTPUT);
+                segstates[i] = 0;
 	}
+
 
 	//Turn off unused hardware on the chip to save power.
 	power_twi_disable();
 	power_spi_disable();
-
-	//  power_usart0_disable();
+        power_usart0_disable();
+        
 	//Debug only - remove these in the final version.
-	Serial.begin(9600);
+	//Serial.begin(9600);
 
         //Measure the battery voltage
-        Serial.print("VCC measurement: ");
-        Serial.print(readVcc());
-        Serial.print("\n");
+        //Serial.print("VCC measurement: ");
+       // Serial.print(readVcc());
+       // Serial.print("\n");
         
 	//Set up timer 1 - display update
 	TCCR1A = 0;
@@ -165,16 +184,17 @@ void setup(){
 
 	//Enable interrupts
 	sei();
-
-
 }
 
 void loop() {
 
   //TODO sleep here - turn off display segments, any pullups (except on CE), screen timer, timer0, ADC, USART (leave only timer2 and INT0 running)
-  //while (!button_interrupt)
-  //goSleep();
-    
+  goSleepUntilButton();
+   
+   _delay_ms(100);
+   button_pressed = false;
+   
+   
     
   //Single press of CE button enters calculator mode, double press enters clock mode, triple press triggers TV-B-GONE, holding enters clockset mode.
   
@@ -189,55 +209,65 @@ void loop() {
   //Seconds, minutes never change between timezones, only hours/days/months
   //This only allows for positive timezone change of (timezone) hours WRT. GMT. Wouldn't try this over more than a 23 hour shift
   
-  uint8_t tzc_hours = hours + timezone;
-  uint8_t tzc_day = day;
-  uint8_t tzc_month = month;
-  int tzc_year = year;
-  
-  if (tzc_hours >= 24) 
-  {
-    tzc_hours = tzc_hours % 24;
-    tzc_day++;
-  
-    if(tzc_day > daysInMonth(tzc_year, tzc_month)) {
-      tzc_day = 1;
-      tzc_month++; 
-      
-      if(tzc_month == 13){
-         tzc_month = 1;
-         tzc_year++;
-      }
-    }  
-  }
-  
-  /*
-  
-  
-	segstates[0] = numbersToSegments[(tzc_day/10)%10];
-	segstates[1] = numbersToSegments[tzc_day%10] WITH_DECIMAL_PLACE;
-	segstates[2] = numbersToSegments[(tzc_month/10)%10];
-	segstates[3] = numbersToSegments[tzc_month%10] WITH_DECIMAL_PLACE;
-	segstates[4] = numbersToSegments[((tzc_year-2000)/10)%10];
-	segstates[5] = numbersToSegments[(tzc_year-2000)%10];
-
-	//  segstates[5] = numbersToSegments[readKeypad()];
-
-	_delay_ms(500);
-
-  
-	segstates[0] = numbersToSegments[(tzc_hours/10)%10];
-	segstates[1] = numbersToSegments[tzc_hours%10] WITH_DECIMAL_PLACE;
-	segstates[2] = numbersToSegments[(minutes/10)%10];
-	segstates[3] = numbersToSegments[minutes%10] WITH_DECIMAL_PLACE;
-  segstates[4] = numbersToSegments[(seconds/10)%10];
-	segstates[5] = numbersToSegments[seconds%10];
-
+ 
+   calculateTimezoneCorrection();
+   displayDate();
   _delay_ms(500);
+  calculateTimezoneCorrection();
+   displayDate();
+  _delay_ms(500);
+  calculateTimezoneCorrection();
+   displayDate();
+  _delay_ms(500);
+
+
+  for(int i=0;i<300;i++) {
+    calculateTimezoneCorrection();
+    displayTime();
+    _delay_ms(10);
+  }
+
+
+  //Press the button again to set the time.
+  if(button_pressed) {
+   // THIS STOPS THE DISPLAY UPDATING cbi();//Don't want the time updating.
+   button_pressed = false;
+   //TODO sanitise
+   uint8_t hr = 0;
+   
+   uint8_t readval = readKeypad();  
+   while(readval == NO_KEY)
+     readval = readKeypad();
+     
+   hr = 10 * readval;
+   
+   while(readKeypad()!=NO_KEY)
+     ;
+   
+   _delay_ms(100); //Debounce
+   
+     readval = readKeypad();
+     while(readval == NO_KEY)
+       readval = readKeypad();
+   
+   hours = hr + readval;
+   hours = hours % 24;
+   
+    calculateTimezoneCorrection();
+    displayTime();
+   
+    sei();  
+  }
+        
+        
+        
+        //  segstates[5] = numbersToSegments[readKeypad()];
+
 	//dow(2013,07,26) returns 5 to indicate Friday.
 
-*/
+
   
-  segstates[0] = numbersToSegments[readKeypad()%10];
+  //segstates[0] = numbersToSegments[readKeypad()%10];
 	
 
   //TODO when waking up, do a battery voltage check, warn if lower than 2.4v or so (measure with 7segs off?)...
@@ -255,6 +285,8 @@ SIGNAL(TIMER2_OVF_vect){
 	seconds = seconds % 60;
 	hours += (minutes/60);
 	minutes = minutes % 60;
+
+
 
 	if (hours == 24) {
 		//Advance once a day.
@@ -300,7 +332,7 @@ SIGNAL(TIMER2_OVF_vect){
 
 //The interrupt occurs when you push the button
 SIGNAL(INT0_vect){
-
+  button_pressed = true;
 }
 
 
@@ -417,6 +449,57 @@ uint8_t daysInMonth(int y, int m) {
 }
 
 
+//Account for timezone.
+void calculateTimezoneCorrection() {
+  tzc_hours = hours + timezone;
+  tzc_day = day;
+  tzc_month = month;
+  tzc_year = year;
+  
+  if (tzc_hours >= 24) 
+  {
+    tzc_hours = tzc_hours % 24;
+    tzc_day++;
+  
+    if(tzc_day > daysInMonth(tzc_year, tzc_month)) {
+      tzc_day = 1;
+      tzc_month++; 
+      
+      if(tzc_month == 13){
+         tzc_month = 1;
+         tzc_year++;
+      }
+    }  
+  }
+  
+  
+}
+
+void displayDate() {
+ 
+  segstates[0] = numbersToSegments[(tzc_day/10)%10];
+  segstates[1] = numbersToSegments[tzc_day%10] WITH_DECIMAL_PLACE;
+  segstates[2] = numbersToSegments[(tzc_month/10)%10];
+  segstates[3] = numbersToSegments[tzc_month%10] WITH_DECIMAL_PLACE;
+  segstates[4] = numbersToSegments[((tzc_year-2000)/10)%10];
+  segstates[5] = numbersToSegments[(tzc_year-2000)%10]; 
+  
+}
+
+void displayTime() {
+
+  segstates[0] = numbersToSegments[(tzc_hours/10)%10];
+  segstates[1] = numbersToSegments[tzc_hours%10] WITH_DECIMAL_PLACE;
+  segstates[2] = numbersToSegments[(minutes/10)%10];
+  segstates[3] = numbersToSegments[minutes%10] WITH_DECIMAL_PLACE;
+  segstates[4] = numbersToSegments[(seconds/10)%10];
+  segstates[5] = numbersToSegments[seconds%10];
+
+}
+  
+
+
+
 
 /*
 Improving Accuracy
@@ -455,4 +538,90 @@ long readVcc() {
  //Original constant: 1125300, Charlie's 328p gives 1094802L
   result =  1125300L / result; // Calculate Vcc (in mV); 1125300 = 1.1*1023*1000
   return result; // Vcc in millivolts
+}
+
+
+void goSleepUntilButton() {
+ 
+  //Switch Timer1 off
+  
+  
+  //No clock source for Timer/Counter 1
+ // TCCR1B &= ~((1 << CS10) | (1 << CS11) | (1 << CS12));
+  
+  power_timer1_disable();
+  
+  //Switch timer0 off
+  power_timer0_disable();
+  
+
+  
+  //Switch the segments off
+  //All inputs, no pullups
+  for(uint8_t i=0;i<8;i++){
+    pinMode(segs[i], INPUT);
+    digitalWrite(segs[i], LOW);
+  }
+  for(uint8_t i=0;i<6;i++){
+    pinMode(cols[i], INPUT);
+    digitalWrite(cols[i], LOW);
+  }
+
+  
+  //Switch ADC off
+  
+  ADCSRA &= ~(1<<ADEN); //Disable ADC
+  ACSR = (1<<ACD); //Disable the analog comparator
+  DIDR0 = 0x3F; //Disable digital input buffers on all ADC0-ADC5 pins
+  DIDR1 = (1<<AIN1D)|(1<<AIN0D); //Disable digital input buffer on AIN1/0
+  
+  power_adc_disable();
+
+  
+  button_pressed = false;
+  
+  while (!button_pressed)
+    sleep_mode();
+  
+  //This point will be reached only after the button has been pressed - now we need to wake up again.
+  sleep_disable();
+
+
+  
+  //Switch vital peripherals back on again
+  	  
+  //Set up the 7-segment display pins as outputs.
+  for(uint8_t i=0;i<8;i++){
+    pinMode(segs[i], OUTPUT);
+    digitalWrite(segs[i], SEGMENT_OFF);
+  }
+  
+  for(uint8_t i=0;i<6;i++){
+    pinMode(cols[i], OUTPUT);
+    digitalWrite(cols[i], COLUMN_OFF);
+    segstates[i] = 0;  
+  }
+  
+  power_timer1_enable();
+ // TCCR1B |= (1 << CS10);
+  
+  
+  power_timer0_enable();
+  
+  power_adc_enable();
+  
+  ADCSRA |= (1 << ADEN); //Enable ADC
+  //ACSR = (1<<ACD); //Disable the analog comparator
+  DIDR0 = 0; //Enable digital input buffers on all ADC0-ADC5 pins
+  DIDR1 &= ~((1<<AIN1D)|(1<<AIN0D)); //Enable digital input buffer on AIN1/0
+ 
+  
+  
+  
+
+
+  
+  
+  
+  
 }
