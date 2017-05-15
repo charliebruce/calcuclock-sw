@@ -1,6 +1,5 @@
 /*
-Calcuclock firmware v0.3 - Charlie Bruce, 2013
- 
+ Calcuclock firmware v0.4 - Charlie Bruce, 2013
  
  TECH NOTES:
  
@@ -14,24 +13,21 @@ Calcuclock firmware v0.3 - Charlie Bruce, 2013
  WDT disabled.
  
  TODO stopwatch, finish calculation
- 
- 
- 
- */
+  
+*/
 
-#include <avr/sleep.h>  //Needed for sleep_mode
-#include <avr/power.h>  //Needed for powering down perihperals such as the ADC/TWI and Timers
-#include <stdint.h>     //Needed for uint8_t, suits Charlie's coding style better
-#include <util/delay.h> //Needed for small delays such as when showing LEDs
+#include <avr/sleep.h>  //Needed for sleep_mode (switching the CPU into low-power mode
+#include <avr/power.h>  //Needed for powering down perihperals such as the ADC, TWI and timers
+#include <stdint.h>     //Needed for uint8_t
+#include <util/delay.h> //Needed for small delays, using the function _delay_us and _delay_ms
 
 #include <math.h>
 
-//The state of each segment (A..DP for devices, left = 0, right = 5).
+//The state of each segment (A..DP for displays, left = 0, right = 5).
 volatile uint8_t segstates[6];
 
 //Has the CE button been pressed?
 volatile boolean button_pressed = false;
-
 
 //Pin numbers for the 7-segment display
 const uint8_t segs[8] = {
@@ -66,16 +62,18 @@ const uint8_t ledPin = 3;
 #define COLUMN_OFF HIGH
 #define COLUMN_ON LOW
 
-//preload timer with 65535 - 4000 - 4,000 cycles at 8mhz is 2khz.
+//preload timer with 65535 - 4000 - 4,000 cycles at 8mhz is 2khz (2,000 times per second).
 #define PWM_TIME (65535-4000)
 
-#define SUNDAY 0
-#define MONDAY 1
-#define TUESDAY 2
-#define MWEDNESDAY 3
-#define THURSDAY 4
-#define FRIDAY 5
-#define SATURDAY 6
+enum Days {
+  Sunday = 0,
+  Monday, Tuesday, Wednesday, Thursday, Friday, Saturday
+};
+
+enum Months {
+ January = 1,
+ February, March, April, May, June, July, August, September, October, November, December
+};
 
 
 #define WITH_DECIMAL_PLACE |(1<<7)
@@ -101,19 +99,17 @@ enum Keys {
 };
 
 //Time variables - GMT - 24-hour
-
-volatile uint8_t hours = 01;
-volatile uint8_t minutes = 17;
+volatile uint8_t hours = 12;
+volatile uint8_t minutes = 50;
 volatile uint8_t seconds = 00;
-
 
 //Date variables - GMT
 volatile int year = 2013;
-volatile int month = 7;
-volatile int day = 29;
+volatile int month = 8;
+volatile int day = 11;
 
 
-
+//Timezone-corrected hours, days, months. Minutes and seconds don't change in different timezones
 uint8_t tzc_hours = 0;
 uint8_t tzc_day = 1;
 uint8_t tzc_month = 1;
@@ -123,7 +119,7 @@ int tzc_year = 2000;
 //where 1 means that the displayed time is one hour greater than GMT
 uint8_t timezone = 1;
 
-#define MIN_SAFE_BATTERY_VOLTAGE 2600
+#define MIN_SAFE_BATTERY_VOLTAGE 3400
 
 
 
@@ -199,31 +195,72 @@ void loop() {
   
   //TODO sleep here - turn off display segments, any pullups (except on CE), screen timer, timer0, ADC, USART (leave only timer2 and INT0 running)
   goSleepUntilButton();
-
-  _delay_ms(100);
   button_pressed = false;
-
-
-
+  _delay_ms(100);
+  
+  uint8_t mode = 0;
+  displayClock();
+  long sleepTime = millis();
+  while (millis() - sleepTime < 2500) {
+   if(button_pressed) {
+    mode++;
+    mode = mode % 3;
+    switch(mode){
+     case 0:
+       displayClock();
+       break;
+     case 1:
+       displayCalc();
+       break;
+     case 2:
+       displaySetClock();
+       break;  
+    }
+    _delay_ms(150);//Debounce
+    button_pressed = false;
+    sleepTime = millis();
+   } 
+  }
+  
   //Single press of CE button enters calculator mode, double press enters clock mode, triple press triggers TV-B-GONE, holding enters clockset mode.
-
+  
+  
   //Clockset mode should account for BST or NOT-BST (whenever the hour, day or month increments, check against the BST conditions?)
   //Or just require user intervention...
-
-  //clockMode();
-
-  calculatorMode();
+  
+  switch(mode){
+     case 0:
+       clockMode();
+       break;
+     case 1:
+       calculatorMode();
+       break;
+     case 2:
+       setTime();
+       displayClock();
+       _delay_ms(2000);
+       clockMode();
+       break;  
+  }
+  
 
   //Measure the battery voltage - if we're at less than MIN_SAFE_BATTERY_VOLTAGE, show a warning. 
   
-  //Note that this measurement happens when the LECD is ON! not OFF
+  //Note that this measurement happens when the LECD is OFF - this prevents the current draw of the 7-segment displays from affecting the measurements.
   long vcc = 0;
+  blankDisplay();
   if ((vcc = readVcc()) < MIN_SAFE_BATTERY_VOLTAGE) {
     showLowBatteryWarning();
     _delay_ms(3000);
-    displayLong(vcc);
-    segstates[2] |= 128;//DP
-    _delay_ms(3000);
+    
+    for(int i=0;i<10;i++) {
+      blankDisplay();
+      vcc = readVcc();
+      displayLong(vcc);
+      segstates[2] |= 128;//DP
+      _delay_ms(500);
+    }
+    
   }
   
 }
@@ -231,9 +268,7 @@ void loop() {
 
 
 void clockMode() {
-
-
-
+  
   //CLOCK MODE
 
   //Accounta for timezone (tzc_ means timezone-corrected)
@@ -255,26 +290,155 @@ void clockMode() {
 
 }
 
-
+//Whole numbers only for now...
 void calculatorMode() {
 
-  displayLong(123);//0 crashes this
+  displayLong(0);
   
   //Sleep time?
   unsigned long sleepTime = millis();
-  
+  long num = 0;
+  long lastnum = 0;
+  uint8_t operation = 0;
   //Wait for a keypad button to be pressed
   uint8_t kpb = NO_KEY;
+  
+  while(1==1) {
   
   while((kpb = readKeypad()) == NO_KEY) {
    if ((millis() - sleepTime) > 15000)
       return; //After 15s go to sleep again.
+   if(button_pressed)
+   {
+     button_pressed = false;  
+     num = 0;
+     lastnum = 0;
+     displayLong(0);
+   }
+  } 
+
+  
+  if (kpb < 10)
+  {
+   //Pressed a number 
+   num = num * 10;
+   num += kpb;
+  } 
+  else {
+  if(kpb != KEY_EQ) {
+   operation = kpb;
+   lastnum = num;
+   num = 0;  
+  }
+  if (kpb == KEY_EQ) {
+    switch(operation){
+     case 0: 
+       break;
+    case KEY_ADD:
+       num = lastnum + num;
+       break;
+    case KEY_SUB:
+       num = lastnum - num;
+        break; 
+        case KEY_MUL:
+       num = lastnum * num;
+       break;
+       case KEY_DIV:
+       num = lastnum / num;
+       break;  
+      }
+    
+  }
+    
+  }
+  
+  displayLong(num);
+
+  while(readKeypad()!=NO_KEY);
+  _delay_ms(100);
+
+  sleepTime = millis();
   }
 
 
 
 
+}
 
+void setTime() {
+  
+  //Copy the current (GMT) datetime into a set of variables
+  uint8_t l_seconds = seconds;
+  uint8_t l_minutes = minutes;
+  uint8_t l_hours = hours;
+  uint8_t l_days = day;
+  uint8_t l_months = month;
+  uint8_t l_years = year;
+8  
+  long sleepTime = millis();
+  
+  //Update date_time (if not C/CE pressed)
+  while(!button_pressed) {
+    while((kpb = readKeypad()) == NO_KEY) {
+     if ((millis() - sleepTime) > 15000)
+        return; //After 15s go to sleep again, without saving the changes to the time.
+    } 
+    
+    
+  }
+  
+  //Save into GMT time
+  
+  
+  //Display done message
+  displayDone();
+  _display_ms(2000);
+  
+}
+
+void displayDone() {
+  
+ segstates[0] = 0b00111111;//D
+ segstates[1] = 0b01011100;//o
+ segstates[2] = 0b01010100;//n 
+ segstates[3] = 0b01111001;//E
+ segstates[4] = 0;
+ segstates[5] = 0;
+ 
+}
+
+void displayCalc() {
+  
+ segstates[0] = 0b00111001;//C
+ segstates[1] = 0b01110111;//A
+ segstates[2] = 0b00111000;//L 
+ segstates[3] = 0b00111001;//C
+ segstates[4] = 0;
+ segstates[5] = 0;
+ 
+}
+
+void displayClock() {
+  
+ segstates[0] = 0b00111001;//C
+ segstates[1] = 0b01110100;//h
+ segstates[2] = 0b01010000;//r 
+ segstates[3] = 0b01011100;//o
+ segstates[4] = 0b01010100;//n
+ segstates[5] = 0b01011100;//o
+ 
+}
+
+void displaySetClock() {
+  
+ segstates[0] = 0b01101101;//S
+ segstates[1] = 0b01111001;//E
+ segstates[2] = 0b01111000;//t
+ segstates[3] = 0;
+ segstates[4] = 0;
+ segstates[5] = 0;
+ 
+ 
 }
 
 void displayPressedKey() {
@@ -358,19 +522,14 @@ void displayPressedKey() {
     segstates[5] = 0;
 
   }
-
-
-
   _delay_ms(2000);
-
-
-
-
 }
 
 
 
-//32.768kHz interrupt handler - this overflows once a second (or once every 8 seconds for maximum power savings?)
+//32.768kHz interrupt handler - this overflows once a second 
+//Making this trigger once every 8 seconds would give maximum power savings
+//Unfortunately this would lose the second-level resolution, and break GMT
 //This updates GMT time, detects BST transition
 //TODO simplify/optimise this for power saving
 SIGNAL(TIMER2_OVF_vect){
@@ -409,7 +568,7 @@ SIGNAL(TIMER2_OVF_vect){
   //BST begins at 01:00 GMT on the last Sunday of March and ends at 01:00 GMT on the last Sunday of October
 
   //Fire at 1AM on Sundays
-  if ((seconds == 0) && (minutes == 0) && (hours == 1) && (dayOfWeek(year, month, day) == SUNDAY)) {
+  if ((seconds == 0) && (minutes == 0) && (hours == 1) && (dayOfWeek(year, month, day) == Sunday)) {
     if((month == 3) && ((day+7)>31)){
       //If it's the last Sunday of the month we're entering BST
       timezone = 1;
@@ -437,12 +596,7 @@ SIGNAL(TIMER1_OVF_vect){
 }
 
 
-
-
-
-
-//TODO draw accounting for brightness better than this (primitive left-right shifting)
-//TODO account for the transistor with the code. Will update this on the "real" hardware.
+//TODO Brightness control 
 //TODO optimise - this is an interrupt, so it should be FAST otherwise we'll miss button C/CE button presses
 //(if this consumes more than a few hundred cycles, it's using too many. This runs every 4000 cycles so it shouldn't take moe than 400 or so.
 //OR we could nest an interrupt, at the risk of making things VERY messy...
@@ -481,7 +635,7 @@ Read the value of the keypad
 uint8_t readKeypad(void) {
   //Switch the ADC on
 
-  //TODO Read the pins until the range is low enough to consider it "settled"?
+  //TODO Read the pins until the range is low enough to consider it "settled"? Seems to work OK without.
   int val = analogRead(btnsA);
   if (val > (1023-64))
     val = analogRead(btnsB) + 1024;
@@ -501,15 +655,48 @@ uint8_t readKeypad(void) {
 
 
 //Day of week - 0=Sunday, 1=Monday, 2=Tuesday, 3=Wednesday, 4=Thursday, 5=Friday, 6=Saturday
+//Month 1=Jan, ....
+//This might look confusing but it works. It's called Sakamoto's Algorithm
 int dayOfWeek(int y, int m, int d)
 {
   static const int t[] = {
     0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4  };
-  //TODO does this modify the year, unintentionally?
   y -= m < 3;
   return (y + y/4 - y/100 + y/400 + t[m-1] + d) % 7;
 }
 
+//BST begins at 01:00 GMT on the last Sunday of March and ends at 01:00 GMT on the last Sunday of October; 
+//This is technically incorrect between 00:00 and 01:00 on the two nights of BST-GMT switchover
+//But this bug is so minor that it's barely worth thinking about
+boolean inBst(int y, int m, int d) {
+  
+ if( (m==January) || (m==February) || (m==November) || (m==December) )
+   return false;
+   
+ if( (m==April) || (m==May) || (m==June) || (m==July) || (m==August) || (m==September) )
+   return true;
+   
+   
+ //Find the last Sunday of the month (March or Cotober), by counting back from the 31st
+ int i = 31;
+ while (dayOfWeek(y,m,i) != Sunday)
+   i--;
+ 
+ if (m==March)
+ {
+   if (d>=i)
+     return true;
+   return false;
+ }
+ else 
+ { //It's October
+   if(d>=i)
+     return false;
+   return true;
+ }
+  
+  
+}
 
 //Is the current year a leap year? ie does February have a 29th?
 boolean leapYear(int y) {
@@ -564,7 +751,7 @@ void displayDate() {
   segstates[1] = numbersToSegments[tzc_day%10] WITH_DECIMAL_PLACE;
   segstates[2] = numbersToSegments[(tzc_month/10)%10];
   segstates[3] = numbersToSegments[tzc_month%10] WITH_DECIMAL_PLACE;
-  segstates[4] = numbersToSegments[((tzc_year-2000)/10)%10];
+  segstates[4] = numbersToSegments[((tzc_year-2000)/10)%10];//OK up to 2099
   segstates[5] = numbersToSegments[(tzc_year-2000)%10]; 
 
 }
@@ -592,6 +779,11 @@ void displayLong(long num) {
   segstates[5] = 0;
   segstates[6] = 0;
 
+  //Something later on assumes non-zero.
+  if(num == 0) {
+   segstates[5] = numbersToSegments[0];
+   return;  
+  }
 
   boolean negative = false;
   if (num<0) {
@@ -862,10 +1054,25 @@ void showLowBatteryWarning() {
   segstates[1] = 0b11011100;// o.
 
   segstates[2] = 0b01111100;// b
-  segstates[3] = 0b01110111;// A
+  segstates[3] = 0b01110111;// A //0b11011100;// a.
   segstates[4] = 0b01111000;// t
   segstates[5] = 0b01111000;// t
 
+}
+uint8_t blankMemory[6];
+void blankDisplay() {
+ 
+ for(int i=0;i<6;i++) {
+  blankMemory[i] = segstates[i];
+  segstates[i] = 0;
+ }
+ 
+}
 
-
+void unblankDisplay() {
+  
+  for(int i=0;i<6;i++) {
+    segstates[i] = blankMemory[i];
+ }
+  
 }
