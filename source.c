@@ -226,7 +226,90 @@ void loop() {
     displayTime();
     _delay_ms(10);
   }
-        
+  
+  
+  uint8_t k = readKeypad();
+  
+  while (k == NO_KEY)
+    k = readKeypad();
+  
+  if (k<10) {
+    
+    segstates[0] = numbersToSegments[k];
+    segstates[1] = 0;
+    segstates[2] = 0;
+    segstates[3] = 0;
+    segstates[4] = 0;
+    segstates[5] = 0;
+
+  }
+
+ if(k == KEY_DP) {
+   
+    segstates[0] = 0b01011110;
+    segstates[1] = 0b01110011;
+    segstates[2] = 0;
+    segstates[3] = 0;
+    segstates[4] = 0;
+    segstates[5] = 0;
+
+ }
+ 
+ if(k == KEY_EQ) {
+   
+    segstates[0] = 0b01111001;
+    segstates[1] = 0b01100111;
+    segstates[2] = 0;
+    segstates[3] = 0;
+    segstates[4] = 0;
+    segstates[5] = 0;
+
+ }
+ 
+  if(k == KEY_ADD) {
+   
+     segstates[0] = 0b01110111; 
+     segstates[1] = 0b01011110;
+     segstates[2] = 0b01011110;
+     segstates[3] = 0;
+     segstates[4] = 0;
+     segstates[5] = 0;
+
+  }
+  if(k == KEY_SUB) { //Display the text Sub
+   
+     segstates[0] = 0b01101101; 
+     segstates[1] = 0b00011100;
+     segstates[2] = 0b01111100;
+     segstates[3] = 0;
+     segstates[4] = 0;
+     segstates[5] = 0;
+
+  }
+  if(k == KEY_MUL) { //Display the text Tpl
+   
+     segstates[0] = 0b01111000; 
+     segstates[1] = 0b01110011;
+     segstates[2] = 0b00111000;
+     segstates[3] = 0;
+     segstates[4] = 0;
+     segstates[5] = 0;
+
+  }
+  if(k == KEY_DIV) { //Display the text Div
+   
+     segstates[0] = 0b01011110;
+     segstates[1] = 0b00010000;
+     segstates[2] = 0b00011100;
+     segstates[3] = 0;
+     segstates[4] = 0;
+     segstates[5] = 0;
+
+  }
+  
+  
+  
+  _delay_ms(2000);
         
         //  segstates[5] = numbersToSegments[readKeypad()];
 
@@ -355,8 +438,6 @@ void updateDisplay() {
 //. - 896
 //No key - 1023
 
-
-
 static const Keys keymap[] = {KEY_7, KEY_4, KEY_1, KEY_0, KEY_8, KEY_5, KEY_2, KEY_DP, KEY_9, KEY_6, KEY_3, KEY_EQ, KEY_ADD, KEY_SUB, KEY_MUL, KEY_DIV, NO_KEY};
 /*
 Read the value of the keypad
@@ -415,7 +496,6 @@ uint8_t daysInMonth(int y, int m) {
     return dim[m];  
 }
 
-
 //Account for timezone.
 void calculateTimezoneCorrection() {
   tzc_hours = hours + timezone;
@@ -437,9 +517,7 @@ void calculateTimezoneCorrection() {
          tzc_year++;
       }
     }  
-  }
-  
-  
+  } 
 }
 
 void displayDate() {
@@ -463,10 +541,6 @@ void displayTime() {
   segstates[5] = numbersToSegments[seconds%10];
 
 }
-  
-
-
-
 
 /*
 Improving Accuracy
@@ -507,7 +581,9 @@ long readVcc() {
   return result; // Vcc in millivolts
 }
 
-
+/*
+ *  Go to sleep (low power) and don't leave this function intil the C/CE/ON button  is pressed.
+ */
 void goSleepUntilButton() {
  
   //Switch Timer1 off
@@ -581,14 +657,5 @@ void goSleepUntilButton() {
   //ACSR = (1<<ACD); //Disable the analog comparator
   DIDR0 = 0; //Enable digital input buffers on all ADC0-ADC5 pins
   DIDR1 &= ~((1<<AIN1D)|(1<<AIN0D)); //Enable digital input buffer on AIN1/0
- 
-  
-  
-  
 
-
-  
-  
-  
-  
 }
