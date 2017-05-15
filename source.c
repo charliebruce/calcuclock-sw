@@ -1,5 +1,5 @@
 /*
- Calcuclock firmware v0.97 - Charlie Bruce, 2013
+ Calcuclock firmware v0.98 - Charlie Bruce, 2013
 
  TECH NOTES:
 
@@ -110,6 +110,8 @@ enum Messages {
 	MSG_REMOTE,
 	MSG_POSINF,
 	MSG_NEGINF,
+	MSG_DATE,
+	MSG_TODO
 };
 
 //Time variables - GMT - 24-hour. For example, to enter 12:05, in Summer time, you'd enter hours = 11; minutes = 5; (do NOT set to 05! 05 is processed differently to 5!)
@@ -135,7 +137,18 @@ uint8_t timezone = 1;
 //Below this battery voltage, a warning should be displayed. 2.6v (2600) is a safe number. You can go lower but the device may behave unpredictably.
 #define MIN_SAFE_BATTERY_VOLTAGE 2400
 
+// we need fundamental FILE definitions and printf declarations
+#include <stdio.h>
 
+// create a FILE structure to reference our UART output function
+
+static FILE uartout = {0} ;
+
+static int uart_putchar (char c, FILE *stream)
+{
+	Serial.write(c) ;
+	return 0 ;
+}
 
 void setup(){
 
@@ -174,6 +187,10 @@ void setup(){
 	//power_usart0_disable();
 
 	Serial.begin(9600);
+	// fill in the UART file descriptor with pointer to writer.
+	fdev_setup_stream (&uartout, uart_putchar, NULL, _FDEV_SETUP_WRITE);
+	// The uart is the standard output device STDOUT.
+	stdout = &uartout;
 
 	//Set up timer 1 - display update
 	TCCR1A = 0;
@@ -185,7 +202,7 @@ void setup(){
 	//Set up timer 2 - real time clock
 	TCCR2A = 0;
 	TCCR2B = (1<<CS22)|(1<<CS20); //1-second resolution
-	//TCCR2B = (1<<CS22)|(1<<CS21)|(1<<CS20); //8-second resolution saves power at the expense of preciision.
+	//TCCR2B = (1<<CS22)|(1<<CS21)|(1<<CS20); //8-second resolution saves power at the expense of precision.
 	ASSR = (1<<AS2); //Enable asynchronous operation
 	TIMSK2 = (1<<TOIE2); //Enable the timer 2 overflow interrupt
 
@@ -215,7 +232,7 @@ void loop() {
 	while (millis() - sleepTime < 2500) {
 		if(button_pressed) {
 			mode++;
-			mode = mode % 3;
+			mode = mode % 4;
 			switch(mode){
 			case 0:
 				displayMessage(MSG_CHRONO);
@@ -225,6 +242,9 @@ void loop() {
 				break;
 			case 2:
 				displayMessage(MSG_REMOTE);
+				break;
+			case 3:
+				displayMessage(MSG_SET);
 				break;
 
 			}
@@ -250,6 +270,8 @@ void loop() {
 	case 2:
 		remoteMode();
 		break;
+	case 3:
+		setMode();
 	}
 
 
@@ -276,7 +298,7 @@ void loop() {
 //NOT YET DONE
 void remoteMode(){
 
-	displayDouble(12.9876);
+	displayMessage(MSG_TODO);
 	_delay_ms(3000);
 
 }
@@ -327,6 +349,8 @@ void calculatorMode() {
 	float fCurrNum = 0.0f;
 	float fEntNum = 0.0f;
 
+	float enteringSB = 0.1;
+
 	//Wait for a keypad button to be pressed
 	uint8_t keypadButton = NO_KEY;
 
@@ -334,6 +358,7 @@ void calculatorMode() {
 
 	//Entering a negative number?
 	boolean enteringNegativeNumber = false;
+	boolean enteringAfterDP = false;
 
 	//Loop until we're finished, and re-enter power save mode.
 	while(1==1) {
@@ -356,6 +381,8 @@ void calculatorMode() {
 				fCurrNum = 0.0f;
 				fEntNum = 0.0f;
 				enteringNegativeNumber = false;
+				enteringAfterDP = false;
+				enteringSB = 0.1;
 				sleepTime = millis();
 			}
 		}
@@ -373,18 +400,27 @@ void calculatorMode() {
 				fEntNum = makePositivef(fEntNum);
 			}
 
-			iEntNum = iEntNum * 10;
-			iEntNum = iEntNum + keypadButton;
+			if(enteringAfterDP) {
 
-			fEntNum = fEntNum * 10;
-			fEntNum = fEntNum + keypadButton;
+				//Floats only make sense...
+				fEntNum = fEntNum + enteringSB * keypadButton;
+				enteringSB *= 0.1;
+
+			}
+			else {
+				iEntNum = iEntNum * 10;
+				iEntNum = iEntNum + keypadButton;
+
+				fEntNum = fEntNum * 10;
+				fEntNum = fEntNum + keypadButton;
+			}
 
 			if(enteringNegativeNumber)
 			{
 				iEntNum = makeNegative(iEntNum);
 				fEntNum = makeNegativef(fEntNum);
 			}
-			displayInt64(iEntNum);
+			displayBest(iEntNum, fEntNum);
 
 		}
 
@@ -392,7 +428,7 @@ void calculatorMode() {
 		else {
 
 			//Is it an operation, or a negative sign?
-			if((iEntNum == 0) && ((keypadButton == KEY_SUB) || (keypadButton == KEY_DP)))
+			if(((iEntNum == 0) && (keypadButton == KEY_SUB)) || (keypadButton == KEY_DP))
 			{
 				if(keypadButton == KEY_SUB) {
 					//We're entering a negative number...
@@ -401,7 +437,8 @@ void calculatorMode() {
 				} else
 				{
 					//We're pressing the decimal place here...
-					//enteringAfterDecimal = true;
+					enteringAfterDP = true;
+					enteringSB = 0.1;
 					//TODO implement this logic
 					Serial.println("Decimal place pressed...");
 				}
@@ -431,12 +468,16 @@ void calculatorMode() {
 						fCurrNum = fCurrNum * fEntNum;
 						break;
 					case KEY_DIV:
-						if ((iEntNum == 0)||(fEntNum == 0)) {
+						if (fEntNum == 0) { //Prevent division by zero
 							displayMessage(MSG_ERROR);
 							_delay_ms(3000);
 							button_pressed = true;
 						}
+						if(iEntNum == 0)
+							iCurrNum = 2^60 * sign(iCurrNum);//infinity-ish
+						else
 						iCurrNum = iCurrNum / iEntNum;
+
 						fCurrNum = fCurrNum / fEntNum;
 						break;
 					}
@@ -453,11 +494,15 @@ void calculatorMode() {
 					iEntNum = 0;
 					fEntNum = 0.0f;
 					enteringNegativeNumber = false;
+					enteringAfterDP = false;
+					enteringSB = 0.1;
 					operation = keypadButton;
 				}
 
+				displayBest(iCurrNum, fCurrNum);
+
+
 			}
-			displayDouble(fCurrNum);
 
 
 
@@ -479,7 +524,36 @@ void calculatorMode() {
 
 }
 
-void setTime() {
+void displayBest(int64_t i, float f) {
+	//Compare the integer and floating answers. IF they're within a small amount of each other, we can assume the integer is correct (FP error)
+	if(abs(i - f) < 0.001)
+	{
+		displayInt64(i);
+		return;
+	}
+
+
+	//If the integer is close to the float, display it.
+	int64_t cast = (int64_t) f;
+
+	if(abs(cast - f) < 0.001)
+	{
+		displayInt64(cast);
+		return;
+	}
+
+
+	displayDouble(f);
+}
+int sign(int64_t num){
+	if(num > 0)
+		return +1;
+	if(num < 0)
+		return -1;
+	return 0;
+}
+//Mode for setting the clock time.
+void setMode() {
 
 	//Copy the current (GMT) datetime into a set of variables
 	uint8_t l_seconds = seconds;
@@ -487,24 +561,148 @@ void setTime() {
 	uint8_t l_hours = hours;
 	uint8_t l_days = day;
 	uint8_t l_months = month;
-	uint8_t l_years = year;
+	int l_years = year;
+
+
+	//First enter date...
+	displayMessage(MSG_DATE);
+	_delay_ms(2500);
+	segstates[0] = number[(l_days/10)%10];
+	segstates[1] = number[(l_days)%10] WITH_DECIMAL_PLACE;
+	segstates[2] = number[(l_months/10)%10];
+	segstates[3] = number[(l_months)%10] WITH_DECIMAL_PLACE;
+	segstates[4] = number[((l_years-2000)/10)%10];
+	segstates[5] = number[((l_years-2000))%10];
+
+	_delay_ms(250);
+	segstates[0] = 0;//Blank the first digit.
 
 	long sleepTime = millis();
 	uint8_t kpb = NO_KEY;
 	//Update date_time (if not C/CE pressed)
-	while(!button_pressed) {
-		while((kpb = readKeypad()) == NO_KEY) {
-			if ((millis() - sleepTime) > 15000)
-				return; //After 15s go to sleep again, without saving the changes to the time.
+	int i = 0;
+	uint8_t values[6];
 
+	while(i<6) {
+		while((kpb = readKeypad()) == NO_KEY) {
+			if (((millis() - sleepTime) > 15000) || button_pressed)
+				return; //After 15s or if CE pressed, go to sleep again, without saving the changes to the time.
 		}
 
-		//
+		if(kpb < 10)
+		{
+			//Valid number pressed
+			segstates[i] = number[kpb];
+			values[i] = kpb;
+			if((i==1) || (i==3))
+				segstates[i] |= 0b10000000;
+			if(i<=4)
+				segstates[i+1] = 0;//Blank the next
+
+			i++;
+		}
+
+
+		//Wait for the key to be released.
+		while((kpb = readKeypad()) != NO_KEY)
+			_delay_ms(50);
+
+		//Don't go to sleep if the button has been pressed.
+		sleepTime = millis();
 
 	}
 
-	//Save into GMT time
+	//OK, so we have an array of digits.
+	int hypotheticalDays    = values[0]*10+values[1];
+	int hypotheticalMonths  = values[2]*10+values[3];
+	int hypotheticalYears   = values[4]*10+values[5] + 2000;
 
+	//TODO check if valid date, correct if invalid
+
+	if(!dateIsValid(hypotheticalYears, hypotheticalMonths, hypotheticalDays))
+	{
+		//Note there's no way for the year to be invalid, I believe.
+		hypotheticalDays = 1;
+		hypotheticalMonths = 1;
+		hypotheticalYears = 2013;
+		displayMessage(MSG_ERROR);
+		_delay_ms(5000);
+	}
+
+	printf("Setting d=%i, m=%i, y=%i \n", hypotheticalDays, hypotheticalMonths, hypotheticalYears);
+
+	day = hypotheticalDays;
+	month = hypotheticalMonths;
+	year = hypotheticalYears;
+
+
+
+	//Repeat for the time.
+
+	displayMessage(MSG_TIME);
+	_delay_ms(2500);
+	segstates[0] = number[(l_hours/10)%10];
+	segstates[1] = number[(l_hours)%10] WITH_DECIMAL_PLACE;
+	segstates[2] = number[(l_minutes/10)%10];
+	segstates[3] = number[(l_minutes)%10] WITH_DECIMAL_PLACE;
+	segstates[4] = number[((l_seconds)/10)%10];
+	segstates[5] = number[(l_seconds)%10];
+
+	_delay_ms(250);
+	segstates[0] = 0;//Blank the first digit.
+
+	sleepTime = millis();
+	kpb = NO_KEY;
+	i=0;
+	while(i<6) {
+		while((kpb = readKeypad()) == NO_KEY) {
+			if (((millis() - sleepTime) > 15000) || button_pressed)
+				return; //After 15s or if CE pressed, go to sleep again, without saving the changes to the time.
+		}
+
+		if(kpb < 10)
+		{
+			//Valid number pressed
+			segstates[i] = number[kpb];
+			values[i] = kpb;
+			if((i==1) || (i==3))
+				segstates[i] |= 0b10000000;
+			if(i<=4)
+				segstates[i+1] = 0;//Blank the next
+
+			i++;
+		}
+
+
+		//Wait for the key to be released.
+		while((kpb = readKeypad()) != NO_KEY)
+			_delay_ms(50);
+
+		//Don't go to sleep if the button has been pressed.
+		sleepTime = millis();
+
+	}
+
+
+	//OK, so we have an array of digits.
+	int hypotheticalHours    = values[0]*10+values[1]  - (inBst(year, month, day)?1:0);
+	int hypotheticalMinutes  = values[2]*10+values[3];
+	int hypotheticalSeconds   = values[4]*10+values[5];
+
+	//TODO check if valid time...
+
+	printf("Setting h=%i, m=%i, s=%i \n", hypotheticalHours, hypotheticalMinutes, hypotheticalSeconds);
+	if(inBst(year, month, day))
+		Serial.print("BST time so -1 hour");
+	else
+		Serial.print("Not BST - setting directly.");
+
+	hours   = (hypotheticalHours) % 24; //Technically should subtract one from the day if less then midnight, etc. Edge case ignored for simplicity.
+	minutes = hypotheticalMinutes % 60;
+	seconds = hypotheticalSeconds % 60;
+
+	//Save into GMT time
+	timezone = inBst(year, month, day)?1:0;
 
 	//Display done message
 	displayMessage(MSG_DONE);
@@ -515,9 +713,27 @@ void displayMessage(uint8_t msg) {
 
 	switch(msg) {
 	case MSG_DONE:
-		segstates[0] = 0b00111111;//D
+		segstates[0] = 0b01011110;//d
 		segstates[1] = 0b01011100;//o
 		segstates[2] = 0b01010100;//n
+		segstates[3] = 0b01111001;//E
+		segstates[4] = 0;
+		segstates[5] = 0;
+		break;
+
+	case MSG_TODO:
+		segstates[0] = 0b01111000;// t
+		segstates[1] = 0b01011100;//o
+		segstates[2] = 0b01011110;//d
+		segstates[3] = 0b01011100;//o
+		segstates[4] = 0;
+		segstates[5] = 0;
+		break;
+
+	case MSG_DATE:
+		segstates[0] = 0b01011110;//d
+		segstates[1] = 0b01110111;//A
+		segstates[2] = 0b01111000;//t
 		segstates[3] = 0b01111001;//E
 		segstates[4] = 0;
 		segstates[5] = 0;
@@ -542,12 +758,12 @@ void displayMessage(uint8_t msg) {
 		break;
 
 	case MSG_TIME:
-		segstates[0] = 0b00000111;//t
-		segstates[1] = 0b00110001;//t
-		segstates[2] = 0b00010000;//i
-		segstates[3] = 0b01010100;//m
-		segstates[4] = 0b01000100;//m
-		segstates[5] = 0b01111001;// E
+		segstates[0] = 0b01111000;//t
+		segstates[1] = 0b00010000;//i
+		segstates[2] = 0b01010100;//m
+		segstates[3] = 0b01000100;//m
+		segstates[4] = 0b01111001;// E
+		segstates[5] = 0;
 		break;
 
 	case MSG_SET:
@@ -878,6 +1094,37 @@ boolean inBst(int y, int m, int d) {
 
 }
 
+/*
+ * Is the given date valid (ie, does it exist on the calendar);
+ */
+boolean dateIsValid(int y, int m, int d) {
+
+	printf("Testing date d=%i, m=%i, y=%i \n", d, m, y);
+
+	if ((m<January) || (m>December)){
+		printf("Invalid month %i", m);
+		return false;
+	}
+
+	if(y<2000) {
+		printf("Year too low %i", y);
+		return false;
+	}
+	if(y>2099) {
+		printf("Year too high %i", y);
+		return false;
+	}
+
+	if(d>daysInMonth(y,m)) {
+		printf("Day too great %i - meant to be %i", d, daysInMonth(y,m));
+		return false;
+	} else {
+		printf("Day OK - %i in month, am at %i", daysInMonth(y,m), d);
+	}
+
+	printf("Valid date\n");
+	return true;
+}
 //Is the current year a leap year? ie does February have a 29th?
 boolean leapYear(int y) {
 	//Here's the weird set of rules for determining if the year is a leap year...
@@ -897,7 +1144,7 @@ uint8_t daysInMonth(int y, int m) {
 	if (leapYear(y) && (m==2))
 		return 29;
 	else
-		return dim[m];
+		return dim[m-1];
 }
 
 //Account for timezone.
@@ -1372,4 +1619,5 @@ void unblankDisplay() {
 	}
 
 }
+
 
