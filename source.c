@@ -1,5 +1,5 @@
 /*
- Calcuclock firmware v0.6 - Charlie Bruce, 2013
+ Calcuclock firmware v0.9 - Charlie Bruce, 2013
 
  TECH NOTES:
 
@@ -397,6 +397,11 @@ void calculatorMode() {
 				fCurrNum = fCurrNum * fEntNum;
 				break;
 			case KEY_DIV:
+				if ((iEntNum == 0)||(fEntNum == 0)) {
+					displayMessage(MSG_ERROR);
+					_delay_ms(3000);
+					button_pressed = true;
+				}
 				iCurrNum = iCurrNum / iEntNum;
 				fCurrNum = fCurrNum / fEntNum;
 				break;
@@ -539,6 +544,8 @@ void displayMessage(uint8_t msg) {
 		segstates[1] = 0b01110111;// A //0b11011100;// a.
 		segstates[2] = 0b01111000;// t
 		segstates[3] = 0b01111000;// t
+		segstates[4] = 0;
+		segstates[5] = 0;
 		break;
 
 	case MSG_REMOTE:
@@ -546,15 +553,21 @@ void displayMessage(uint8_t msg) {
 		segstates[1] = 0b01111000;// t
 		segstates[2] = 0b01010000;// r
 		segstates[3] = 0b00110000;//l
+		segstates[4] = 0;
+		segstates[5] = 0;
 		break;
 
 	case MSG_POSINF:
-		segstates[0] = 0b01110011;// P
-		segstates[1] = 0b01011100;// o
-		segstates[2] = 0b01101101;// s
-		segstates[3] = 0b00010000;// i
-		segstates[4] = 0b01010100;// n
-		segstates[5] = 0b01110001;// f
+		//segstates[0] = 0b01110011;// P
+		//segstates[1] = 0b01011100;// o
+		//segstates[2] = 0b01101101;// s
+		segstates[0] = 0b00110000;// I
+		segstates[1] = 0b01010100;// n
+		segstates[2] = 0b01110001;// f
+		segstates[3] = 0;
+		segstates[4] = 0;
+		segstates[5] = 0;
+
 		break;
 
 	case MSG_NEGINF:
@@ -1080,19 +1093,43 @@ void displayDouble(double num) {
 			num = num - digit;
 			num = num * 10;
 
+			//We can't use the +0.000001 trick here because we might be dealing with very small numbers.
+
 		}
-		if((floor(base10log)+1)>9) {
-			segstates[3] = 0b01111001;//E
-			segstates[4] = numbersToSegments[((uint8_t)(floor(base10log) + 1)/10) % 10];
-			segstates[5] = numbersToSegments[((uint8_t)(floor(base10log) + 1)) % 10];
-		} else {
-			segstates[4] = 0b01111001;//E
-			segstates[5] = numbersToSegments[(uint8_t) floor(base10log) + 1];//Careful! Will get too big and start spewing garbage
+
+
+
+
+
+		int exp = floor(base10log)+1;
+
+
+		if(exp < -9) {
+			//We need to display "E-XX"!
+			segstates[2] = 0b01111001;//E;
+			segstates[3] = 0b01000000; //-
+			segstates[4] = numbersToSegments[((-exp)/10) % 10];
+			segstates[5] = numbersToSegments[(-exp) % 10];
+
 		}
-		if(negative)
-			segstates[1] |= 0b10000000;//Add the decimal place
 		else
-			segstates[0] |= 0b10000000;
+		{
+			if((exp)>9 || exp < 0) {
+				segstates[3] = 0b01111001;//E
+				if(exp < 0){
+					segstates[4] = 0b01000000; //-
+					segstates[5] = numbersToSegments[(-exp)%10];
+				} else {
+				segstates[4] = numbersToSegments[(exp/10) % 10];
+				segstates[5] = numbersToSegments[exp % 10];
+				}
+			} else {
+				segstates[4] = 0b01111001;//E
+				segstates[5] = numbersToSegments[(uint8_t) floor(base10log) + 1];//Careful! Will get too big and start spewing garbage, and fails for -ve
+			}
+		}
+
+		segstates[(negative?1:0)] |= 0b10000000;//Add the decimal place
 
 	}
 	else {
@@ -1132,16 +1169,20 @@ void displayDouble(double num) {
 
 			num = num - digit;
 			num = num * 10;
-			num = num +0.0000001;//Does this help?
+			num = num +0.0000001;//Does this help? Yes, seems so.
 
 		}
 
 		//.Add the decimal place.
 		if(base10log < 0)
-			segstates[0] |= 0b10000000;
+			segstates[(negative?1:0)] |= 0b10000000;
 		else
-			segstates[(uint8_t)floor(base10log)+(negative?1:0)]|=0b10000000;
+		{
+			//Display the decimal place in the relevant position, if it isn't the last display
+			if ((uint8_t)floor(base10log)+(negative?1:0) < 5)
+				segstates[(uint8_t)floor(base10log)+(negative?1:0)]|=0b10000000;
 
+		}
 	}
 
 
