@@ -1,5 +1,5 @@
 /*
- Calcuclock firmware v0.9 - Charlie Bruce, 2013
+ Calcuclock firmware v0.97 - Charlie Bruce, 2013
 
  TECH NOTES:
 
@@ -392,11 +392,19 @@ void calculatorMode() {
 		else {
 
 			//Is it an operation, or a negative sign?
-			if((iEntNum == 0) && (keypadButton == KEY_SUB))
+			if((iEntNum == 0) && ((keypadButton == KEY_SUB) || (keypadButton == KEY_DP)))
 			{
-				//We're entering a negative number...
-				enteringNegativeNumber = true;
-				Serial.println("Entering a negative number");
+				if(keypadButton == KEY_SUB) {
+					//We're entering a negative number...
+					enteringNegativeNumber = true;
+					Serial.println("Entering a negative number");
+				} else
+				{
+					//We're pressing the decimal place here...
+					//enteringAfterDecimal = true;
+					//TODO implement this logic
+					Serial.println("Decimal place pressed...");
+				}
 			}
 
 			else {
