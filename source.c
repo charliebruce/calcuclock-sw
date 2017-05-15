@@ -390,6 +390,10 @@ void calculatorMode() {
 		//A key has been pressed.
 
 
+
+
+
+
 		//It's a number.
 		if (keypadButton < 10)
 		{
@@ -422,10 +426,22 @@ void calculatorMode() {
 			}
 			displayBest(iEntNum, fEntNum);
 
+			//Wait for button release - numbers don't have a "press-hold" alt function, so we just
+			//spin here, after the number has been displayed, to minmimise perceived lag.
+			while(readKeypad()!=NO_KEY)
+			{;}
+
 		}
 
 		//It's not a number, it's a special button.
 		else {
+
+			int keyTime = 0;
+			//Time how long the button is held for.
+			while(readKeypad()!=NO_KEY)
+			{keyTime++; _delay_ms(10);}
+
+			printf("Key held for %i ms \n", (keyTime * 10));
 
 			//Is it an operation, or a negative sign?
 			if(((iEntNum == 0) && (keypadButton == KEY_SUB)) || (keypadButton == KEY_DP))
@@ -476,7 +492,7 @@ void calculatorMode() {
 						if(iEntNum == 0)
 							iCurrNum = 2^60 * sign(iCurrNum);//infinity-ish
 						else
-						iCurrNum = iCurrNum / iEntNum;
+							iCurrNum = iCurrNum / iEntNum;
 
 						fCurrNum = fCurrNum / fEntNum;
 						break;
@@ -509,9 +525,6 @@ void calculatorMode() {
 		}
 
 
-		//Wait for the button to be released before continuing.
-		while(readKeypad()!=NO_KEY)
-		{;}
 
 		_delay_ms(50);
 
